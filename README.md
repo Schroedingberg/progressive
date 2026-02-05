@@ -2,12 +2,20 @@
 
 A local-first Progressive Web App for workout tracking, built with ClojureScript.
 
+This is a rewrite of [romance-progression](https://github.com/schroedingberg/romance-progression) - a server-based Clojure app. This PWA version eliminates server dependencies, working entirely offline in the browser while preserving the core event-sourcing architecture.
+
+## Why This Exists
+
+- **Learn Clojure(Script)** by solving a real problem I understand well
+- **Own my data** - no proprietary apps, no cloud dependencies
+- **Simple architecture** - event sourcing makes the core logic ~200 lines
+
 ## Features
 
 - **Offline-first**: Works without internet connection
 - **Local storage**: All data persisted in browser localStorage
 - **Event sourcing**: Immutable event log with DataScript
-- **Plan templates**: Customizable workout plans
+- **Plan templates**: Customizable workout plans with swappable progression algorithms
 
 ## Tech Stack
 
@@ -22,15 +30,11 @@ A local-first Progressive Web App for workout tracking, built with ClojureScript
 ### Prerequisites
 
 - Node.js (v18+)
-- Clojure CLI tools
 
 ### Setup
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
 npm run dev
 ```
 
@@ -42,21 +46,20 @@ The app will be available at http://localhost:3000
 |---------|-------------|
 | `npm run dev` | Start development server with hot reload |
 | `npm run release` | Build optimized production bundle |
-| `npm run test` | Run tests |
+| `npm run test` | Run tests once |
+| `npm run test:watch` | Run tests in watch mode |
 | `npm run clean` | Remove compiled artifacts |
 
 ## Project Structure
 
 ```
-├── deps.edn              # Clojure dependencies
-├── package.json          # Node dependencies
-├── shadow-cljs.edn       # ClojureScript build config
-├── resources/
-│   └── public/
-│       ├── index.html    # HTML entry point
-│       ├── manifest.json # PWA manifest
-│       └── sw.js         # Service worker
-├── src/cljs/rp/
+├── shadow-cljs.edn       # Build config and dependencies
+├── package.json          # Node dependencies and scripts
+├── resources/public/
+│   ├── index.html        # HTML entry point
+│   ├── manifest.json     # PWA manifest
+│   └── sw.js             # Service worker
+├── src/rp/
 │   ├── core.cljs         # App entry point
 │   ├── db.cljs           # DataScript event store
 │   ├── plan.cljs         # Workout plan templates
@@ -64,7 +67,7 @@ The app will be available at http://localhost:3000
 │   ├── storage.cljs      # localStorage persistence
 │   ├── ui.cljs           # Reagent components
 │   └── util.cljs         # Utility functions
-└── test/cljs/rp/
+└── test/rp/
     └── state_test.cljs   # Tests
 ```
 
@@ -76,7 +79,7 @@ The app uses an **event sourcing** pattern:
 2. Events are stored in DataScript and persisted to localStorage
 3. Current state is reconstructed by replaying events against the plan template
 
-This allows for complete history, undo capability, and sync in the future.
+**Key insight**: Your workout log is just a flat list of events. To show progress, we transform events into a nested structure matching the plan, then deep-merge them. This means you can deviate from the plan (extra sets, different exercises) and your data stays intact. You can also swap progression algorithms without data migration.
 
 ## License
 
