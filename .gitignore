@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+target/
+resources/public/js/cljs-runtime/
+resources/public/js/main.js
+resources/public/js/manifest.edn
+
+# Shadow-cljs
+.shadow-cljs/
+
+# Editor
+.idea/
+*.iml
+.vscode/
+.calva/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# REPL
+.nrepl-port
+.cpcache/

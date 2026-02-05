@@ -1,0 +1,10 @@
+{
+  "name": "Romance Progression",
+  "short_name": "RP Workout",
+  "description": "Track your workout progression",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1095c1",
+  "icons": []
+}

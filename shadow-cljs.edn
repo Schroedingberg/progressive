@@ -1,0 +1,31 @@
+{:source-paths ["src" "test"]
+ :dependencies [[reagent/reagent "1.2.0"]
+                [datascript/datascript "1.7.3"]]
+ :nrepl {:port 7889}
+
+ :builds
+ {:app
+  {:target :browser
+   :output-dir "resources/public/js"
+   :asset-path "/js"
+
+   :modules
+   {:main {:init-fn rp.core/init!}}
+
+   :devtools
+   {:http-root "resources/public"
+    :http-port 3000}
+
+   :dev
+   {:compiler-options
+    {:optimizations :none}}
+
+   :release
+   {:compiler-options
+    {:optimizations :advanced}}}
+
+  :test
+  {:target :node-test
+   :output-to "target/test/test.js"
+   :ns-regexp "-test$"
+   :autorun true}}}
