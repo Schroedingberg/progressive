@@ -54,7 +54,7 @@
   [e]
   (-> e
       (dissoc :db/id)
-      (update-keys #(-> % name (subs 6) keyword))))
+      (update-keys #(keyword (name %)))))
 
 (defn get-all-events
   "Get all logged events, sorted by timestamp."
