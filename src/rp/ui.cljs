@@ -25,6 +25,41 @@
 
 (defonce current-page (r/atom :workouts))
 
+;; -----------------------------------------------------------------------------
+;; Set row component
+;; -----------------------------------------------------------------------------
+
+(defn- set-location
+  "Build the location map for a set (used by db functions)."
+  [mesocycle microcycle workout exercise set-index]
+  {:mesocycle mesocycle
+   :microcycle microcycle
+   :workout workout
+   :exercise exercise
+   :set-index set-index})
+
+(defn- weight-input
+  "Weight input field."
+  [{:keys [value placeholder disabled skipped? on-change]}]
+  [:input {:type "number"
+           :placeholder placeholder
+           :value value
+           :disabled disabled
+           :on-change on-change
+           :style (cond-> {:width "5rem"}
+                    skipped? (assoc :text-decoration "line-through" :opacity "0.5"))}])
+
+(defn- reps-input
+  "Reps input field."
+  [{:keys [value placeholder disabled skipped? on-change]}]
+  [:input {:type "number"
+           :placeholder placeholder
+           :value value
+           :disabled disabled
+           :on-change on-change
+           :style (cond-> {:width "4rem"}
+                    skipped? (assoc :text-decoration "line-through" :opacity "0.5"))}])
+
 (defn- set-row
   "A single set with weight/reps inputs.
   Completed sets can be clicked to enter edit mode for corrections.
@@ -38,83 +73,69 @@
             skipped? (= type :set-skipped)
             completed? (some? performed-weight)
             in-edit-mode? @editing?
-            editable? (and (not skipped?) (or (not completed?) in-edit-mode?))]
+            editable? (and (not skipped?) (or (not completed?) in-edit-mode?))
+            location (set-location mesocycle microcycle workout exercise set-index)
+
+            ;; Handlers
+            save-set! (fn []
+                        (when (and (seq @weight) (seq @reps))
+                          (db/log-set! (assoc location
+                                              :weight (js/parseFloat @weight)
+                                              :reps (js/parseInt @reps)
+                                              :prescribed-weight prescribed-weight
+                                              :prescribed-reps prescribed-reps))
+                          (reset! editing? false)))
+            skip-set! (fn [] (db/skip-set! location))
+            enter-edit! (fn []
+                          (reset! weight (str performed-weight))
+                          (reset! reps (str performed-reps))
+                          (reset! editing? true))
+            cancel-edit! (fn [] (reset! editing? false))]
+
         [:form {:style {:display "flex" :gap "0.5rem" :align-items "center" :margin-bottom "0.5rem"}}
-         [:input {:type "number"
-                  :placeholder (if prescribed-weight (str prescribed-weight " kg") "kg")
-                  :value (cond
-                           in-edit-mode? @weight
-                           completed? performed-weight
-                           :else @weight)
-                  :disabled (not editable?)
-                  :on-change #(reset! weight (-> % .-target .-value))
-                  :style (cond-> {:width "5rem"}
-                           skipped? (assoc :text-decoration "line-through" :opacity "0.5"))}]
+         [weight-input {:value (cond in-edit-mode? @weight completed? performed-weight :else @weight)
+                        :placeholder (if prescribed-weight (str prescribed-weight " kg") "kg")
+                        :disabled (not editable?)
+                        :skipped? skipped?
+                        :on-change #(reset! weight (-> % .-target .-value))}]
          [:span "×"]
-         [:input {:type "number"
-                  :placeholder (if prescribed-reps (str prescribed-reps) "reps")
-                  :value (cond
-                           in-edit-mode? @reps
-                           completed? performed-reps
-                           :else @reps)
-                  :disabled (not editable?)
-                  :on-change #(reset! reps (-> % .-target .-value))
-                  :style (cond-> {:width "4rem"}
-                           skipped? (assoc :text-decoration "line-through" :opacity "0.5"))}]
+         [reps-input {:value (cond in-edit-mode? @reps completed? performed-reps :else @reps)
+                      :placeholder (if prescribed-reps (str prescribed-reps) "reps")
+                      :disabled (not editable?)
+                      :skipped? skipped?
+                      :on-change #(reset! reps (-> % .-target .-value))}]
+
          (cond
-           ;; Skipped: show skip indicator, click to undo
            skipped?
-           [:button.secondary.outline {:type "button"
-                                       :style {:padding "0.25rem 0.5rem" :margin 0 :opacity "0.5"}
-                                       :title "Skipped - click to undo"
-                                       :on-click (fn [_]
-                                                   (reset! weight "")
-                                                   (reset! reps "")
-                                                   ;; Re-log as completed with empty values triggers edit mode
-                                                   (reset! editing? false))}
+           [:button.secondary.outline
+            {:type "button"
+             :style {:padding "0.25rem 0.5rem" :margin 0 :opacity "0.5"}
+             :title "Skipped - click to undo"
+             :on-click cancel-edit!}
             "⊘"]
-           ;; Completed: show checkmark, click to edit
+
            (and completed? (not in-edit-mode?))
-           [:button.outline {:type "button"
-                             :style {:padding "0.25rem 0.5rem" :margin 0}
-                             :on-click (fn [_]
-                                         (reset! weight (str performed-weight))
-                                         (reset! reps (str performed-reps))
-                                         (reset! editing? true))}
+           [:button.outline
+            {:type "button"
+             :style {:padding "0.25rem 0.5rem" :margin 0}
+             :on-click enter-edit!}
             "✓"]
-           ;; Not completed or editing: show checkbox to save
+
            :else
            [:<>
-            [:input {:type "checkbox"
-                     :checked false
-                     :on-change (fn [_]
-                                  (when (and (seq @weight) (seq @reps))
-                                    (db/log-set!
-                                     {:mesocycle mesocycle
-                                      :microcycle microcycle
-                                      :workout workout
-                                      :exercise exercise
-                                      :set-index set-index
-                                      :weight (js/parseFloat @weight)
-                                      :reps (js/parseInt @reps)
-                                      :prescribed-weight prescribed-weight
-                                      :prescribed-reps prescribed-reps})
-                                    (reset! editing? false)))}]
-            [:button.secondary.outline {:type "button"
-                                        :style {:padding "0.25rem 0.5rem" :margin 0 :font-size "0.8rem"}
-                                        :title "Skip this set"
-                                        :on-click (fn [_]
-                                                    (db/skip-set!
-                                                     {:mesocycle mesocycle
-                                                      :microcycle microcycle
-                                                      :workout workout
-                                                      :exercise exercise
-                                                      :set-index set-index}))}
+            [:input {:type "checkbox" :checked false :on-change save-set!}]
+            [:button.secondary.outline
+             {:type "button"
+              :style {:padding "0.25rem 0.5rem" :margin 0 :font-size "0.8rem"}
+              :title "Skip this set"
+              :on-click skip-set!}
              "Skip"]])
+
          (when in-edit-mode?
-           [:button.secondary.outline {:type "button"
-                                       :style {:padding "0.25rem 0.5rem" :margin 0}
-                                       :on-click #(reset! editing? false)}
+           [:button.secondary.outline
+            {:type "button"
+             :style {:padding "0.25rem 0.5rem" :margin 0}
+             :on-click cancel-edit!}
             "✕"])]))))
 
 (defn- exercise-card
