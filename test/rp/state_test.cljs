@@ -130,7 +130,16 @@
           result (#'state/dedupe-by-latest events)]
       (is (= 1 (count result)))
       (is (= :set-completed (:type (first result))))
-      (is (= 100 (:performed-weight (first result)))))))
+      (is (= 100 (:performed-weight (first result))))))
+
+  (testing "rejected overwrites completed when later (volume cap)"
+    (let [events [{:mesocycle "P" :microcycle 0 :workout :mon :exercise "A"
+                   :set-index 0 :type :set-completed :performed-weight 100 :timestamp 1000}
+                  {:mesocycle "P" :microcycle 0 :workout :mon :exercise "A"
+                   :set-index 0 :type :set-rejected :timestamp 2000}]
+          result (#'state/dedupe-by-latest events)]
+      (is (= 1 (count result)))
+      (is (= :set-rejected (:type (first result)))))))
 
 ;; =============================================================================
 ;; events->plan-map tests (internal function)
@@ -351,3 +360,67 @@
   (testing "requires each workout to have :exercises map"
     (is (string? (plan/validate-template
                   {:name "X" :n-microcycles 4 :workouts {:monday {}}})))))
+
+;; =============================================================================
+;; Exercise swap tests
+;; =============================================================================
+
+(deftest get-swaps-test
+  (testing "returns empty map with no swap events"
+    (let [events [{:type :set-completed :mesocycle "P" :microcycle 0 :workout :mon :timestamp 1000}]]
+      (is (= {} (state/get-swaps events {:mesocycle "P" :microcycle 0 :workout :mon})))))
+
+  (testing "returns swap for matching workout"
+    (let [events [{:type :exercise-swapped
+                   :mesocycle "P" :microcycle 0 :workout :mon
+                   :original-exercise "Squat"
+                   :replacement-exercise "Leg Press"
+                   :muscle-groups [:quads]
+                   :timestamp 1000}]]
+      (is (= {"Squat" {:name "Leg Press" :muscle-groups [:quads]}}
+             (state/get-swaps events {:mesocycle "P" :microcycle 0 :workout :mon})))))
+
+  (testing "ignores swaps from other workouts"
+    (let [events [{:type :exercise-swapped
+                   :mesocycle "P" :microcycle 0 :workout :tue
+                   :original-exercise "Squat"
+                   :replacement-exercise "Leg Press"
+                   :muscle-groups [:quads]
+                   :timestamp 1000}]]
+      (is (= {} (state/get-swaps events {:mesocycle "P" :microcycle 0 :workout :mon})))))
+
+  (testing "latest swap wins for same exercise"
+    (let [events [{:type :exercise-swapped
+                   :mesocycle "P" :microcycle 0 :workout :mon
+                   :original-exercise "Squat"
+                   :replacement-exercise "Leg Press"
+                   :muscle-groups [:quads]
+                   :timestamp 1000}
+                  {:type :exercise-swapped
+                   :mesocycle "P" :microcycle 0 :workout :mon
+                   :original-exercise "Squat"
+                   :replacement-exercise "Hack Squat"
+                   :muscle-groups [:quads]
+                   :timestamp 2000}]]
+      (is (= {"Squat" {:name "Hack Squat" :muscle-groups [:quads]}}
+             (state/get-swaps events {:mesocycle "P" :microcycle 0 :workout :mon}))))))
+
+(deftest apply-swaps-test
+  (testing "returns exercises unchanged with no swaps"
+    (let [exercises {"Squat" [{:set-index 0}]}
+          swaps {}]
+      (is (= {"Squat" [{:set-index 0}]} (state/apply-swaps exercises swaps)))))
+
+  (testing "renames exercise according to swap"
+    (let [exercises {"Squat" [{:set-index 0}]}
+          swaps {"Squat" {:name "Leg Press" :muscle-groups [:quads]}}]
+      (is (= {"Leg Press" [{:set-index 0 :muscle-groups [:quads] :original-exercise "Squat"}]}
+             (state/apply-swaps exercises swaps)))))
+
+  (testing "preserves unswapped exercises"
+    (let [exercises {"Squat" [{:set-index 0}]
+                     "Bench" [{:set-index 0}]}
+          swaps {"Squat" {:name "Leg Press" :muscle-groups [:quads]}}]
+      (is (= {"Leg Press" [{:set-index 0 :muscle-groups [:quads] :original-exercise "Squat"}]
+              "Bench" [{:set-index 0}]}
+             (state/apply-swaps exercises swaps))))))

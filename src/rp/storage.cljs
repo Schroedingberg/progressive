@@ -24,3 +24,15 @@
   []
   (.removeItem js/localStorage DB-KEY)
   (db/clear-all!))
+
+(defn export-db!
+  "Download database as EDN file."
+  []
+  (let [data (db/db->edn)
+        blob (js/Blob. #js [data] #js {:type "application/edn"})
+        url (.createObjectURL js/URL blob)
+        link (.createElement js/document "a")]
+    (set! (.-href link) url)
+    (set! (.-download link) (str "rp-workout-" (.toISOString (js/Date.)) ".edn"))
+    (.click link)
+    (.revokeObjectURL js/URL url)))

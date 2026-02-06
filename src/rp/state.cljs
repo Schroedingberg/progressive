@@ -44,7 +44,7 @@
 (defn view-progress-in-plan
   "Merge event log with plan to show progress."
   [events plan]
-  (let [set-events (filter :set-index events)
+  (let [set-events (filter #(number? (:set-index %)) events)
         event-map (-> set-events
                       dedupe-by-latest
                       events->plan-map)]
@@ -63,7 +63,13 @@
   (= (workout-location a) (workout-location b)))
 
 (defn- set-done? [set-data]
-  (or (:performed-weight set-data) (= (:type set-data) :set-skipped)))
+  (or (:performed-weight set-data)
+      (#{:set-skipped :set-rejected} (:type set-data))))
+
+(defn- set-completed?
+  "True only if set was actually performed (not skipped/rejected)."
+  [set-data]
+  (some? (:performed-weight set-data)))
 
 (defn feedback-reported?
   "Has feedback of `event-type` been reported for this muscle-group in this workout?"
@@ -82,16 +88,22 @@
        (filter #(some #{muscle-group} (:muscle-groups %)))))
 
 (defn- muscle-group-started? [progress loc muscle-group]
-  (some set-done? (muscle-group-sets progress loc muscle-group)))
+  (some set-completed? (muscle-group-sets progress loc muscle-group)))
 
 (defn- muscle-group-finished? [progress loc muscle-group]
-  (let [sets (muscle-group-sets progress loc muscle-group)]
-    (and (seq sets) (every? set-done? sets))))
+  (let [sets (muscle-group-sets progress loc muscle-group)
+        completed-sets (filter set-completed? sets)]
+    ;; Need at least one completed set, and all sets must be done (completed, skipped, or rejected)
+    (and (seq completed-sets) (every? set-done? sets))))
 
 (defn last-active-workout
-  "Get workout context from most recently logged set."
+  "Get workout context from most recently logged COMPLETED set (not skipped/rejected)."
   [events]
-  (when-let [last-set (->> events (filter :set-index) (sort-by :timestamp) last)]
+  (when-let [last-set (->> events
+                           (filter #(and (number? (:set-index %))
+                                         (= (:type %) :set-completed)))
+                           (sort-by :timestamp)
+                           last)]
     (workout-location last-set)))
 
 (defn pending-feedback
@@ -111,3 +123,36 @@
   "Muscle groups that need session rating (finished but not rated)."
   [events progress loc muscle-groups]
   (pending-feedback events progress loc muscle-groups :session-rated muscle-group-finished?))
+
+;; -----------------------------------------------------------------------------
+;; Exercise swaps
+;; -----------------------------------------------------------------------------
+
+(defn get-swaps
+  "Get map of original->replacement exercise names for a workout location."
+  [events {:keys [mesocycle microcycle workout]}]
+  (->> events
+       (filter #(= (:type %) :exercise-swapped))
+       (filter #(and (= (:mesocycle %) mesocycle)
+                     (= (:microcycle %) microcycle)
+                     (= (keyword (:workout %)) (keyword workout))))
+       ;; Latest swap wins if same exercise swapped multiple times
+       (sort-by :timestamp)
+       (reduce (fn [m {:keys [original-exercise replacement-exercise muscle-groups]}]
+                 (assoc m original-exercise {:name replacement-exercise
+                                             :muscle-groups muscle-groups}))
+               {})))
+
+(defn apply-swaps
+  "Apply exercise swaps to a workout map. Returns updated workout with swapped names."
+  [workout-exercises swaps]
+  (reduce-kv
+   (fn [acc exercise-name sets]
+     (if-let [{:keys [name muscle-groups]} (get swaps exercise-name)]
+       ;; Swapped: use new name, preserve muscle groups from swap event
+       (assoc acc name (mapv #(assoc % :muscle-groups muscle-groups
+                                     :original-exercise exercise-name) sets))
+       ;; Not swapped: keep as-is
+       (assoc acc exercise-name sets)))
+   {}
+   workout-exercises))

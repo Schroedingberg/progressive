@@ -64,6 +64,24 @@
     :mesocycle mesocycle :microcycle microcycle :workout workout
     :exercise exercise :set-index set-index}))
 
+(defn reject-set!
+  "Log a rejected set (volume cap - algorithm prescribed too many)."
+  [{:keys [mesocycle microcycle workout exercise set-index]}]
+  (transact-event!
+   {:type :set-rejected
+    :mesocycle mesocycle :microcycle microcycle :workout workout
+    :exercise exercise :set-index set-index}))
+
+(defn swap-exercise!
+  "Log an exercise swap (keep muscle groups, change movement)."
+  [{:keys [mesocycle microcycle workout original-exercise replacement-exercise muscle-groups]}]
+  (transact-event!
+   {:type :exercise-swapped
+    :mesocycle mesocycle :microcycle microcycle :workout workout
+    :original-exercise original-exercise
+    :replacement-exercise replacement-exercise
+    :muscle-groups muscle-groups}))
+
 (defn log-soreness-reported!
   "Log soreness feedback for a muscle group."
   [{:keys [mesocycle microcycle workout muscle-group soreness]}]

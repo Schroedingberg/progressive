@@ -63,11 +63,12 @@
   [:nav.container
    [:ul [:li [:strong "RP"]]]
    [:ul
-    (for [[page label] nav-items]
-      ^{:key page}
-      [:li [:a {:href "#" :class (when (= @current-page page) "contrast")
-                :on-click #(do (.preventDefault %) (reset! current-page page))}
-            label]])]])
+    (doall
+     (for [[page label] nav-items]
+       ^{:key page}
+       [:li [:a {:href "#" :class (when (= @current-page page) "contrast")
+                 :on-click #(do (.preventDefault %) (reset! current-page page))}
+             label]]))]])
 
 ;; =============================================================================
 ;; LAYER 3: Feedback Orchestration (data-driven)
@@ -118,16 +119,21 @@
 
 ;; --- Workouts ---
 
-(defn- week-section [plan-name week workouts]
+(defn- week-section [events plan-name week workouts]
   [:section
    [:h2 (str "Week " (inc week))]
-   (for [[day exercises] workouts]
-     ^{:key day}
-     [:section
-      [:h3 (str/capitalize (name day))]
-      (for [[ex-name sets] exercises]
-        ^{:key ex-name}
-        [workout/exercise-card plan-name week day ex-name sets])])])
+   (doall
+    (for [[day exercises] workouts]
+      (let [loc {:mesocycle plan-name :microcycle week :workout day}
+            swaps (state/get-swaps events loc)
+            swapped-exercises (state/apply-swaps exercises swaps)]
+        ^{:key day}
+        [:section
+         [:h3 (str/capitalize (name day))]
+         (doall
+          (for [[ex-name sets] swapped-exercises]
+            ^{:key ex-name}
+            [workout/exercise-card plan-name week day ex-name sets]))])))])
 
 (defn- workouts-content []
   (let [events (db/get-all-events)
@@ -139,9 +145,10 @@
                                         :active active :dismissed @dismissed-feedback})]
     [:<>
      (when pending [render-feedback-popup pending active])
-     (for [[week workouts] (sort-by first mesocycle-data)]
-       ^{:key week}
-       [week-section plan-name week workouts])]))
+     (doall
+      (for [[week workouts] (sort-by first mesocycle-data)]
+        ^{:key week}
+        [week-section events plan-name week workouts]))]))
 
 ;; --- Plans ---
 
@@ -175,35 +182,37 @@
     [:<>
      [section "Current Plan" [:p [:strong current-name]]]
      [section "Available Plans"
-      (for [t plan/available-templates]
-        ^{:key (:name t)}
-        [plan-card {:template t
-                    :current? (= (:name t) current-name)
-                    :on-select #(do (plan/set-template! t) (reset! current-page :workouts))}])]
+      (doall
+       (for [t plan/available-templates]
+         ^{:key (:name t)}
+         [plan-card {:template t
+                     :current? (= (:name t) current-name)
+                     :on-select #(do (plan/set-template! t) (reset! current-page :workouts))}]))]
      [section "Import Plan" [file-input {:accept ".edn" :on-file import-plan!}]]]))
 
 ;; --- Settings (data-driven actions) ---
 
 (def ^:private settings-actions
-  "Settings buttons. Add {:confirm \"...\"} to require confirmation."
+  "Settings buttons. Add {:confirm-msg \"...\"} to require confirmation."
   [{:label "Export All Data" :class "secondary"
-    :on-click #(js/console.log "Export data")}
+    :on-click storage/export-db!}
    {:label "Clear Logs" :class "secondary.outline"
-    :confirm "Clear all workout logs?"
+    :confirm-msg "Clear all workout logs?"
     :on-click storage/clear-db!}])
 
-(defn- action-button [{:keys [label class confirm on-click]}]
+(defn- action-button [{:keys [label class confirm-msg on-click]}]
   [(keyword (str "button." class))
-   {:on-click (if confirm #(when (js/confirm confirm) (on-click)) on-click)}
+   {:on-click (if confirm-msg #(when (js/confirm confirm-msg) (on-click)) on-click)}
    label])
 
 (defn- settings-content []
   [:<>
    [section "Data"
     [:div {:style {:display "flex" :gap "0.5rem"}}
-     (for [{:keys [label] :as action} settings-actions]
-       ^{:key label}
-       [action-button action])]]
+     (doall
+      (for [{:keys [label] :as action} settings-actions]
+        ^{:key label}
+        [action-button action]))]]
    [section "About"
     [:p "Romance Progression"]
     [:small "Local-first PWA for workout tracking"]]])

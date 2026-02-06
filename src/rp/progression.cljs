@@ -6,6 +6,7 @@
   - Weight-first progression — add weight each session
   - Work preservation — if user overrides weight, adjust reps to maintain
     similar total work increase
+  - Feedback-driven — adjust weight increment based on recovery and session feedback
   
   Work model: work ≈ weight × reps (simplified)
   
@@ -18,7 +19,25 @@
 ;; Configuration
 ;; -----------------------------------------------------------------------------
 
-(def ^:private weight-increment 2.5)  ; kg to add each session
+(def ^:private base-weight-increment 2.5)  ; kg to add each session
+
+;; Feedback-based increment modifiers
+(def ^:private soreness-modifiers
+  {:never-sore         1.5    ; Recovered fast, push harder
+   :healed-early       1.25   ; Recovered well, slight increase
+   :healed-just-in-time 1.0   ; Perfect recovery, maintain
+   :still-sore         0.5})  ; Still recovering, back off
+
+(def ^:private workload-modifiers
+  {:easy          1.25   ; Session felt easy, push harder
+   :just-right    1.0    ; Perfect effort
+   :pushed-limits 1.0    ; Good challenge, maintain
+   :too-much      0.75}) ; Overreached, reduce
+
+(def ^:private joint-pain-override
+  {:none   nil      ; No override
+   :some   0.75     ; Reduce due to discomfort
+   :severe 0.0})    ; Zero increase with pain
 
 ;; -----------------------------------------------------------------------------
 ;; History queries
@@ -52,15 +71,60 @@
        (sort-by :timestamp)))
 
 ;; -----------------------------------------------------------------------------
+;; Feedback queries
+;; -----------------------------------------------------------------------------
+
+(defn- get-feedback
+  "Get the latest feedback of given type for a muscle group from previous microcycle."
+  [events event-type {:keys [mesocycle microcycle]} muscle-group]
+  (->> events
+       (filter #(= (:type %) event-type))
+       (filter #(= (:mesocycle %) mesocycle))
+       (filter #(= (:microcycle %) (dec microcycle))) ; previous week's feedback
+       (filter #(some #{(:muscle-group %)} (if (keyword? muscle-group)
+                                             [muscle-group]
+                                             muscle-group)))
+       (sort-by :timestamp)
+       last))
+
+(defn- compute-weight-increment
+  "Calculate weight increment based on feedback from previous microcycle.
+  Returns the adjusted increment (may be 0 if joint pain is severe)."
+  [events location muscle-groups]
+  (if (or (nil? muscle-groups) (<= (:microcycle location) 0))
+    ;; No muscle groups or first week: use base increment
+    base-weight-increment
+    ;; Check feedback for any of the exercise's muscle groups
+    (let [mg (first muscle-groups)  ; Use primary muscle group
+          soreness (get-feedback events :soreness-reported location mg)
+          session (get-feedback events :session-rated location mg)
+
+          ;; Calculate modifiers
+          soreness-mod (get soreness-modifiers (:soreness soreness) 1.0)
+          workload-mod (get workload-modifiers (:sets-workload session) 1.0)
+          pain-override (get joint-pain-override (:joint-pain session))]
+
+      ;; Joint pain overrides everything
+      (if (some? pain-override)
+        (* base-weight-increment pain-override)
+        ;; Otherwise combine modifiers
+        (* base-weight-increment soreness-mod workload-mod)))))
+
+;; -----------------------------------------------------------------------------
 ;; Prescription
 ;; -----------------------------------------------------------------------------
 
 (defn prescribe-weight
-  "Suggest weight for next set: last weight + increment.
-  Returns nil if no history (first workout of meso)."
-  [events location]
-  (when-let [last-perf (last-performance events location)]
-    (+ (:performed-weight last-perf) weight-increment)))
+  "Suggest weight for next set: last weight + feedback-adjusted increment.
+  Returns nil if no history (first workout of meso).
+  
+  muscle-groups is optional - if provided, feedback for those groups affects increment."
+  ([events location]
+   (prescribe-weight events location nil))
+  ([events location muscle-groups]
+   (when-let [last-perf (last-performance events location)]
+     (let [increment (compute-weight-increment events location muscle-groups)]
+       (+ (:performed-weight last-perf) increment)))))
 
 (defn prescribe-reps
   "Suggest reps for next set.
@@ -70,12 +134,15 @@
   
   Returns nil if no history."
   ([events location]
-   (prescribe-reps events location nil))
+   (prescribe-reps events location nil nil))
   ([events location actual-weight]
+   (prescribe-reps events location actual-weight nil))
+  ([events location actual-weight muscle-groups]
    (when-let [last-perf (last-performance events location)]
      (let [last-weight (:performed-weight last-perf)
            last-reps (:performed-reps last-perf)
-           prescribed-weight (+ last-weight weight-increment)
+           increment (compute-weight-increment events location muscle-groups)
+           prescribed-weight (+ last-weight increment)
            target-work (* prescribed-weight last-reps)]
        (if (and actual-weight (not= actual-weight prescribed-weight))
          ;; User overrode weight → adjust reps to maintain work
@@ -85,12 +152,16 @@
 
 (defn prescribe
   "Get full prescription for a set location.
-  Returns {:weight ... :reps ...} or nil for each if no history."
+  Returns {:weight ... :reps ...} or nil for each if no history.
+  
+  muscle-groups is optional - if provided, feedback for those groups affects increment."
   ([events location]
-   (prescribe events location nil))
+   (prescribe events location nil nil))
   ([events location actual-weight]
-   {:weight (prescribe-weight events location)
-    :reps (prescribe-reps events location actual-weight)}))
+   (prescribe events location actual-weight nil))
+  ([events location actual-weight muscle-groups]
+   {:weight (prescribe-weight events location muscle-groups)
+    :reps (prescribe-reps events location actual-weight muscle-groups)}))
 
 ;; -----------------------------------------------------------------------------
 ;; Analysis (for future feedback-based volume adjustment)

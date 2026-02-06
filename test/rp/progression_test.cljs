@@ -121,3 +121,64 @@
           result (prog/prescribe sample-events location)]
       (is (nil? (:weight result)))
       (is (nil? (:reps result))))))
+
+;; -----------------------------------------------------------------------------
+;; Feedback-based progression tests
+;; -----------------------------------------------------------------------------
+
+(deftest feedback-based-weight-increment-test
+  (testing "base increment with no feedback"
+    (let [location {:mesocycle "Plan" :microcycle 1 :workout :monday
+                    :exercise "Squat" :set-index 0}
+          result (prog/prescribe-weight sample-events location [:quads])]
+      ;; No feedback from week 0, so base increment = 2.5
+      (is (= 102.5 result))))
+
+  (testing "increased increment when never sore"
+    (let [events (conj sample-events
+                       {:type :soreness-reported
+                        :mesocycle "Plan" :microcycle 0 :workout :monday
+                        :muscle-group :quads :soreness :never-sore :timestamp 1500})
+          location {:mesocycle "Plan" :microcycle 1 :workout :monday
+                    :exercise "Squat" :set-index 0}
+          result (prog/prescribe-weight events location [:quads])]
+      ;; 2.5 * 1.5 = 3.75
+      (is (= 103.75 result))))
+
+  (testing "decreased increment when still sore"
+    (let [events (conj sample-events
+                       {:type :soreness-reported
+                        :mesocycle "Plan" :microcycle 0 :workout :monday
+                        :muscle-group :quads :soreness :still-sore :timestamp 1500})
+          location {:mesocycle "Plan" :microcycle 1 :workout :monday
+                    :exercise "Squat" :set-index 0}
+          result (prog/prescribe-weight events location [:quads])]
+      ;; 2.5 * 0.5 = 1.25
+      (is (= 101.25 result))))
+
+  (testing "zero increment with severe joint pain"
+    (let [events (conj sample-events
+                       {:type :session-rated
+                        :mesocycle "Plan" :microcycle 0 :workout :monday
+                        :muscle-group :quads :joint-pain :severe :pump 2 :sets-workload :just-right
+                        :timestamp 1500})
+          location {:mesocycle "Plan" :microcycle 1 :workout :monday
+                    :exercise "Squat" :set-index 0}
+          result (prog/prescribe-weight events location [:quads])]
+      ;; severe pain = 0 increment
+      (is (= 100 result))))
+
+  (testing "combined modifiers - easy session + healed early"
+    (let [events (-> sample-events
+                     (conj {:type :soreness-reported
+                            :mesocycle "Plan" :microcycle 0 :workout :monday
+                            :muscle-group :quads :soreness :healed-early :timestamp 1500})
+                     (conj {:type :session-rated
+                            :mesocycle "Plan" :microcycle 0 :workout :monday
+                            :muscle-group :quads :pump 3 :joint-pain :none :sets-workload :easy
+                            :timestamp 1600}))
+          location {:mesocycle "Plan" :microcycle 1 :workout :monday
+                    :exercise "Squat" :set-index 0}
+          result (prog/prescribe-weight events location [:quads])]
+      ;; 2.5 * 1.25 (healed-early) * 1.25 (easy) = 3.90625
+      (is (= 103.90625 result)))))
