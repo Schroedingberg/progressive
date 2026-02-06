@@ -16,6 +16,7 @@
             [cljs.reader :as reader]
             [rp.db :as db]
             [rp.plan :as plan]
+            [rp.progression :as prog]
             [rp.state :as state]
             [clojure.string :as str]))
 
@@ -68,18 +69,28 @@
 (defn- set-row
   "A single set with weight/reps inputs.
   Completed sets can be clicked to enter edit mode for corrections.
-  Skipped sets show as disabled with a skip indicator."
+  Skipped sets show as disabled with a skip indicator.
+  
+  Prescriptions are computed from training history via rp.progression.
+  When user types a different weight, reps placeholder adjusts to maintain work."
   [_mesocycle _microcycle _workout _exercise _set-index _set-data]
   (let [weight (r/atom "")
         reps (r/atom "")
         editing? (r/atom false)]
     (fn [mesocycle microcycle workout exercise set-index set-data]
-      (let [{:keys [performed-weight performed-reps prescribed-weight prescribed-reps type]} set-data
+      (let [{:keys [performed-weight performed-reps type]} set-data
             skipped? (= type :set-skipped)
             completed? (some? performed-weight)
             in-edit-mode? @editing?
             editable? (and (not skipped?) (or (not completed?) in-edit-mode?))
             location (set-location mesocycle microcycle workout exercise set-index)
+            
+            ;; Compute prescriptions from event history
+            events (db/get-all-events)
+            user-weight (when (seq @weight) (js/parseFloat @weight))
+            prescription (prog/prescribe events location user-weight)
+            prescribed-weight (:weight prescription)
+            prescribed-reps (:reps prescription)
 
             ;; Handlers
             save-set! (fn []
@@ -96,7 +107,6 @@
                           (reset! reps (str performed-reps))
                           (reset! editing? true))
             cancel-edit! (fn [] (reset! editing? false))]
-
         [:form {:style {:display "flex" :gap "0.5rem" :align-items "center" :margin-bottom "0.5rem"}}
          [weight-input {:value (cond in-edit-mode? @weight completed? performed-weight :else @weight)
                         :placeholder (if prescribed-weight (str prescribed-weight " kg") "kg")
