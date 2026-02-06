@@ -24,3 +24,6 @@ Thumbs.db
 .nrepl-port
 .cpcache/
 .clj-kondo/.cache/
+
+# Clerk output
+docs/clerk/
