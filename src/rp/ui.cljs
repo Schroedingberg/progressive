@@ -1,480 +1,147 @@
 (ns rp.ui
-  "Reagent components for the workout tracking UI.
+  "Main app shell: navigation and page routing.
   
-  Component hierarchy:
-    app
-    ├── nav-menu (navigation)
-    └── current page:
-        ├── workouts-page (inline week/day structure)
-        │   ├── soreness-popup / session-rating-popup (feedback)
-        │   └── exercise-card
-        │       └── set-row (weight/reps input + actions)
-        ├── plans-page
-        └── settings-page"
+  Components are split into modules:
+    - rp.ui.components - Generic form components
+    - rp.ui.feedback   - Soreness/session rating popups
+    - rp.ui.workout    - Set rows, exercise cards"
   (:require [reagent.core :as r]
             [cljs.reader :as reader]
+            [clojure.string :as str]
             [rp.db :as db]
             [rp.plan :as plan]
-            [rp.progression :as prog]
             [rp.state :as state]
             [rp.storage :as storage]
-            [clojure.string :as str]))
-
-;; -----------------------------------------------------------------------------
-;; Navigation state
-;; -----------------------------------------------------------------------------
+            [rp.ui.feedback :as feedback]
+            [rp.ui.workout :as workout]))
 
 (defonce current-page (r/atom :workouts))
 
 ;; -----------------------------------------------------------------------------
-;; Set row component
-;; -----------------------------------------------------------------------------
-;; TODO: This is still quite nested. Consider:
-;; - Moving to a state machine approach (e.g. {:state :editing/:completed/:skipped})
-;; - Extracting the action buttons into a separate component
-;; - Using a multimethod dispatch on state for rendering
+;; Navigation
 ;; -----------------------------------------------------------------------------
 
-(defn- set-location
-  "Build the location map for a set (used by db functions)."
-  [mesocycle microcycle workout exercise set-index]
-  {:mesocycle mesocycle
-   :microcycle microcycle
-   :workout workout
-   :exercise exercise
-   :set-index set-index})
-
-(defn- weight-input
-  "Weight input field."
-  [{:keys [value placeholder disabled skipped? on-change]}]
-  [:input {:type "number"
-           :placeholder placeholder
-           :value value
-           :disabled disabled
-           :on-change on-change
-           :style (cond-> {:width "5rem"}
-                    skipped? (assoc :text-decoration "line-through" :opacity "0.5"))}])
-
-(defn- reps-input
-  "Reps input field."
-  [{:keys [value placeholder disabled skipped? on-change]}]
-  [:input {:type "number"
-           :placeholder placeholder
-           :value value
-           :disabled disabled
-           :on-change on-change
-           :style (cond-> {:width "4rem"}
-                    skipped? (assoc :text-decoration "line-through" :opacity "0.5"))}])
-
-(defn- set-row
-  "A single set with weight/reps inputs.
-  Completed sets can be clicked to enter edit mode for corrections.
-  Skipped sets show as disabled with a skip indicator.
-  
-  Prescriptions are computed from training history via rp.progression.
-  When user types a different weight, reps placeholder adjusts to maintain work."
-  [_mesocycle _microcycle _workout _exercise _set-index _set-data]
-  (let [weight (r/atom "")
-        reps (r/atom "")
-        editing? (r/atom false)]
-    (fn [mesocycle microcycle workout exercise set-index set-data]
-      (let [{:keys [performed-weight performed-reps type]} set-data
-            skipped? (= type :set-skipped)
-            completed? (some? performed-weight)
-            in-edit-mode? @editing?
-            editable? (and (not skipped?) (or (not completed?) in-edit-mode?))
-            location (set-location mesocycle microcycle workout exercise set-index)
-
-            ;; Compute prescriptions from event history
-            events (db/get-all-events)
-            user-weight (when (seq @weight) (js/parseFloat @weight))
-            prescription (prog/prescribe events location user-weight)
-            prescribed-weight (:weight prescription)
-            prescribed-reps (:reps prescription)
-
-            ;; Handlers
-            save-set! (fn []
-                        (when (and (seq @weight) (seq @reps))
-                          (db/log-set! (assoc location
-                                              :weight (js/parseFloat @weight)
-                                              :reps (js/parseInt @reps)
-                                              :prescribed-weight prescribed-weight
-                                              :prescribed-reps prescribed-reps))
-                          (reset! editing? false)))
-            skip-set! (fn [] (db/skip-set! location))
-            enter-edit! (fn []
-                          (reset! weight (str performed-weight))
-                          (reset! reps (str performed-reps))
-                          (reset! editing? true))
-            cancel-edit! (fn [] (reset! editing? false))]
-        [:form {:style {:display "flex" :gap "0.5rem" :align-items "center" :margin-bottom "0.5rem"}}
-         [weight-input {:value (cond in-edit-mode? @weight completed? performed-weight :else @weight)
-                        :placeholder (if prescribed-weight (str prescribed-weight " kg") "kg")
-                        :disabled (not editable?)
-                        :skipped? skipped?
-                        :on-change #(reset! weight (-> % .-target .-value))}]
-         [:span "×"]
-         [reps-input {:value (cond in-edit-mode? @reps completed? performed-reps :else @reps)
-                      :placeholder (if prescribed-reps (str prescribed-reps) "reps")
-                      :disabled (not editable?)
-                      :skipped? skipped?
-                      :on-change #(reset! reps (-> % .-target .-value))}]
-
-         (cond
-           skipped?
-           [:button.secondary.outline
-            {:type "button"
-             :style {:padding "0.25rem 0.5rem" :margin 0 :opacity "0.5"}
-             :title "Skipped - click to undo"
-             :on-click cancel-edit!}
-            "⊘"]
-
-           (and completed? (not in-edit-mode?))
-           [:button.outline
-            {:type "button"
-             :style {:padding "0.25rem 0.5rem" :margin 0}
-             :on-click enter-edit!}
-            "✓"]
-
-           :else
-           [:<>
-            [:input {:type "checkbox" :checked false :on-change save-set!}]
-            [:button.secondary.outline
-             {:type "button"
-              :style {:padding "0.25rem 0.5rem" :margin 0 :font-size "0.8rem"}
-              :title "Skip this set"
-              :on-click skip-set!}
-             "Skip"]])
-
-         (when in-edit-mode?
-           [:button.secondary.outline
-            {:type "button"
-             :style {:padding "0.25rem 0.5rem" :margin 0}
-             :on-click cancel-edit!}
-            "✕"])]))))
-
-(defn- exercise-card
-  "An exercise with its sets."
-  [mesocycle microcycle workout-key exercise-name sets]
-  (let [muscle-groups (some :muscle-groups sets)]
-    [:article {:key exercise-name}
-     [:h4 exercise-name
-      (when muscle-groups
-        [:small {:style {:font-weight "normal" :margin-left "0.5rem" :color "var(--pico-muted-color)"}}
-         (str/join ", " (map name muscle-groups))])]
-     (for [[idx set-data] (map-indexed vector sets)]
-       ^{:key idx}
-       [set-row mesocycle microcycle workout-key exercise-name idx set-data])]))
-
-;; -----------------------------------------------------------------------------
-;; Feedback popups
-;; -----------------------------------------------------------------------------
-
-(def soreness-options
-  [{:value :never-sore :label "Never got sore"}
-   {:value :healed-early :label "Healed a while ago"}
-   {:value :healed-just-in-time :label "Healed just in time"}
-   {:value :still-sore :label "Still sore"}])
-
-(def sets-workload-options
-  [{:value :easy :label "Easy"}
-   {:value :just-right :label "Just right"}
-   {:value :pushed-limits :label "Pushed my limits"}
-   {:value :too-much :label "Too much"}])
-
-(def joint-pain-options
-  [{:value :none :label "No pain"}
-   {:value :some :label "Some discomfort"}
-   {:value :severe :label "Significant pain"}])
-
-(defn- soreness-popup
-  "Modal dialog for soreness feedback after first set."
-  [{:keys [_muscle-group on-submit on-dismiss]}]
-  (let [selected (r/atom nil)]
-    (fn [{:keys [muscle-group]}]
-      [:dialog {:open true :style {:max-width "400px"}}
-       [:article
-        [:header
-         [:h3 (str "How's your " (name muscle-group) "?")]
-         [:p "Since your last session..."]]
-        [:div {:style {:display "flex" :flex-direction "column" :gap "0.5rem"}}
-         (doall
-          (for [{:keys [value label]} soreness-options]
-            ^{:key value}
-            [:label {:style {:display "flex" :align-items "center" :gap "0.5rem"}}
-             [:input {:type "radio"
-                      :name "soreness"
-                      :checked (= @selected value)
-                      :on-change #(reset! selected value)}]
-             label]))]
-        [:footer {:style {:margin-top "1rem"}}
-         [:button {:disabled (nil? @selected)
-                   :on-click #(on-submit muscle-group @selected)}
-          "Submit"]
-         [:button.secondary {:on-click #(on-dismiss muscle-group) :style {:margin-left "0.5rem"}}
-          "Skip"]]]])))
-
-(defn- session-rating-popup
-  "Modal dialog for session feedback after finishing muscle group."
-  [{:keys [_muscle-group on-submit on-dismiss]}]
-  (let [pump (r/atom 2)
-        joint-pain (r/atom :none)
-        sets-workload (r/atom :just-right)]
-    (fn [{:keys [muscle-group]}]
-      [:dialog {:open true :style {:max-width "450px"}}
-       [:article
-        [:header
-         [:h3 (str "Rate your " (name muscle-group) " session")]]
-
-        ;; Pump slider
-        [:div {:style {:margin-bottom "1rem"}}
-         [:label "Pump: " (case @pump 0 "None" 1 "Mild" 2 "Moderate" 3 "Great" 4 "Best ever")]
-         [:input {:type "range" :min 0 :max 4 :value @pump
-                  :on-change #(reset! pump (js/parseInt (-> % .-target .-value)))}]]
-
-        ;; Joint pain
-        [:div {:style {:margin-bottom "1rem"}}
-         [:label "Joint pain:"]
-         [:div {:style {:display "flex" :gap "1rem" :margin-top "0.5rem"}}
-          (doall
-           (for [{:keys [value label]} joint-pain-options]
-             ^{:key value}
-             [:label {:style {:display "flex" :align-items "center" :gap "0.25rem"}}
-              [:input {:type "radio"
-                       :name "joint-pain"
-                       :checked (= @joint-pain value)
-                       :on-change #(reset! joint-pain value)}]
-              label]))]]
-
-        ;; Sets workload
-        [:div {:style {:margin-bottom "1rem"}}
-         [:label "Number of sets felt:"]
-         [:div {:style {:display "flex" :flex-direction "column" :gap "0.25rem" :margin-top "0.5rem"}}
-          (doall
-           (for [{:keys [value label]} sets-workload-options]
-             ^{:key value}
-             [:label {:style {:display "flex" :align-items "center" :gap "0.5rem"}}
-              [:input {:type "radio"
-                       :name "sets-workload"
-                       :checked (= @sets-workload value)
-                       :on-change #(reset! sets-workload value)}]
-              label]))]]
-
-        [:footer
-         [:button {:on-click #(on-submit muscle-group {:pump @pump
-                                                       :joint-pain @joint-pain
-                                                       :sets-workload @sets-workload})}
-          "Submit"]
-         [:button.secondary {:on-click #(on-dismiss muscle-group) :style {:margin-left "0.5rem"}}
-          "Skip"]]]])))
-
-;; -----------------------------------------------------------------------------
-;; Navigation menu
-;; -----------------------------------------------------------------------------
-
-(defn- nav-menu
-  "Top navigation bar with page links."
-  []
-  (let [nav-item (fn [page label]
-                   [:li [:a {:href "#"
-                             :class (when (= @current-page page) "contrast")
-                             :on-click (fn [e]
-                                         (.preventDefault e)
-                                         (reset! current-page page))}
-                         label]])]
-    [:nav.container
-     [:ul
-      [:li [:strong "RP"]]]
-     [:ul
-      [nav-item :workouts "Workouts"]
-      [nav-item :plans "Plans"]
-      [nav-item :settings "Settings"]]]))
+(defn- nav-menu []
+  [:nav.container
+   [:ul [:li [:strong "RP"]]]
+   [:ul
+    (doall
+     (for [[page label] [[:workouts "Workouts"] [:plans "Plans"] [:settings "Settings"]]]
+       ^{:key page}
+       [:li [:a {:href "#" :class (when (= @current-page page) "contrast")
+                 :on-click #(do (.preventDefault %) (reset! current-page page))}
+             label]]))]])
 
 ;; -----------------------------------------------------------------------------
 ;; Pages
 ;; -----------------------------------------------------------------------------
 
-(defonce ^:private dismissed-feedback (r/atom #{}))   ; #{[:soreness :quads] [:session :quads]}
+(defonce ^:private dismissed-feedback (r/atom #{}))
 
-(defn- get-workout-muscle-groups
-  "Extract all unique muscle groups from a workout's exercises."
-  [exercises-map]
-  (->> exercises-map
-       vals
-       (mapcat identity)
-       (mapcat :muscle-groups)
-       (remove nil?)
-       distinct))
+(defn- workout-muscle-groups [exercises-map]
+  (->> exercises-map vals (mapcat identity) (mapcat :muscle-groups) (remove nil?) distinct))
 
-(defn- workouts-page
-  "Main workout tracking page with feedback popups."
-  []
+(defn- workouts-page []
   (let [events (db/get-all-events)
         plan (plan/get-plan)
         plan-name (plan/get-plan-name)
         progress (state/view-progress-in-plan events plan)
         mesocycle-data (get progress plan-name)
-
-        ;; Auto-detect active workout from most recent set
+        
         active (state/last-active-workout events)
-        workout-exercises (when active
-                            (get-in progress [(:mesocycle active)
-                                              (:microcycle active)
-                                              (:workout active)]))
-        muscle-groups (when workout-exercises
-                        (get-workout-muscle-groups workout-exercises))
-
-        ;; Get dismissed feedback (whole set for reactivity)
+        workout-ex (when active (get-in progress [(:mesocycle active) (:microcycle active) (:workout active)]))
+        muscle-groups (when workout-ex (workout-muscle-groups workout-ex))
         dismissed @dismissed-feedback
-
-        ;; Dismissal keys include workout context
-        make-dismiss-key (fn [type mg]
-                           [type (:mesocycle active) (:microcycle active) (:workout active) mg])
-
+        
+        dismiss-key (fn [type mg] [type (:mesocycle active) (:microcycle active) (:workout active) mg])
+        
         pending-soreness (when active
                            (->> (state/pending-soreness-feedback events progress active muscle-groups)
-                                (remove #(contains? dismissed (make-dismiss-key :soreness %)))
+                                (remove #(contains? dismissed (dismiss-key :soreness %)))
                                 first))
         pending-session (when (and active (not pending-soreness))
                           (->> (state/pending-session-rating events progress active muscle-groups)
-                               (remove #(contains? dismissed (make-dismiss-key :session %)))
+                               (remove #(contains? dismissed (dismiss-key :session %)))
                                first))]
-
     [:<>
-     ;; Feedback popups
      (when pending-soreness
-       [soreness-popup
+       [feedback/soreness-popup
         {:muscle-group pending-soreness
-         :on-submit (fn [muscle-group soreness]
-                      (db/log-soreness-reported!
-                       (assoc active :muscle-group muscle-group :soreness soreness)))
-         :on-dismiss (fn [muscle-group]
-                       (swap! dismissed-feedback conj (make-dismiss-key :soreness muscle-group)))}])
-
+         :on-submit (fn [mg s] (db/log-soreness-reported! (assoc active :muscle-group mg :soreness s)))
+         :on-dismiss (fn [mg] (swap! dismissed-feedback conj (dismiss-key :soreness mg)))}])
+     
      (when pending-session
-       [session-rating-popup
+       [feedback/session-rating-popup
         {:muscle-group pending-session
-         :on-submit (fn [muscle-group {:keys [pump joint-pain sets-workload]}]
-                      (db/log-session-rated!
-                       (assoc active
-                              :muscle-group muscle-group
-                              :pump pump
-                              :joint-pain joint-pain
-                              :sets-workload sets-workload)))
-         :on-dismiss (fn [muscle-group]
-                       (swap! dismissed-feedback conj (make-dismiss-key :session muscle-group)))}])
+         :on-submit (fn [mg data] (db/log-session-rated! (merge active {:muscle-group mg} data)))
+         :on-dismiss (fn [mg] (swap! dismissed-feedback conj (dismiss-key :session mg)))}])
+     
+     [:header [:h1 plan-name] [:p "Track your workout progression"]]
+     
+     (doall
+      (for [[week workouts] (sort-by first mesocycle-data)]
+        ^{:key week}
+        [:section
+         [:h2 (str "Week " (inc week))]
+         (doall
+          (for [[day exercises] workouts]
+            ^{:key day}
+            [:section
+             [:h3 (str/capitalize (name day))]
+             (doall
+              (for [[ex-name sets] exercises]
+                ^{:key ex-name}
+                [workout/exercise-card plan-name week day ex-name sets]))]))]))]))
 
-     [:header
-      [:h1 plan-name]
-      [:p "Track your workout progression"]]
-
-     (for [[microcycle-idx workouts-map] (sort-by first mesocycle-data)]
-       ^{:key microcycle-idx}
-       [:section {:key microcycle-idx}
-        [:h2 (str "Week " (inc microcycle-idx))]
-        (for [[workout-key exercises-map] workouts-map]
-          ^{:key workout-key}
-          [:section
-           [:h3 (str/capitalize (name workout-key))]
-           (for [[exercise-name sets] exercises-map]
-             ^{:key exercise-name}
-             [exercise-card plan-name microcycle-idx workout-key exercise-name sets])])])]))
-
-;; -----------------------------------------------------------------------------
-;; Plan import
-;; -----------------------------------------------------------------------------
-
-(defn- handle-import-result
-  "Process parsed EDN, validate, and save as current plan."
-  [text]
-  (try
-    (let [template (reader/read-string text)]
-      (if-let [err (plan/validate-template template)]
-        (js/alert (str "Invalid plan: " err))
-        (do
-          (plan/set-template! template)
-          (js/alert (str "Imported: " (:name template)))
-          (reset! current-page :workouts))))
-    (catch :default ex
-      (js/alert (str "Parse error: " (.-message ex))))))
-
-(defn- handle-file-select
-  "Handle file input change event."
-  [e]
-  (when-let [file (-> e .-target .-files (aget 0))]
-    (-> (.text file)
-        (.then handle-import-result))))
-
-(defn- plans-page
-  "Plan management page - view, import, create plans."
-  []
+(defn- plans-page []
   (let [current-template (plan/get-template)
         current-name (:name current-template)]
     [:<>
-     [:header
-      [:h1 "Plans"]
-      [:p "Manage your workout plans"]]
-
-     [:section
-      [:h2 "Current Plan"]
-      [:p [:strong current-name]]]
-
+     [:header [:h1 "Plans"] [:p "Manage your workout plans"]]
+     [:section [:h2 "Current Plan"] [:p [:strong current-name]]]
      [:section
       [:h2 "Available Plans"]
-      (for [template plan/available-templates
-            :let [template-name (:name template)
-                  is-current? (= template-name current-name)]]
-        ^{:key template-name}
-        [:article {:style {:margin-bottom "1rem"}}
-         [:header [:strong template-name]]
-         [:p (str (:n-microcycles template) " weeks • "
-                  (count (:workouts template)) " days/week")]
-         (if is-current?
-           [:button.secondary {:disabled true} "Current"]
-           [:button {:on-click #(do (plan/set-template! template)
-                                    (reset! current-page :workouts))}
-            "Use This Plan"])])]
-
+      (doall
+       (for [t plan/available-templates]
+         ^{:key (:name t)}
+         [:article {:style {:margin-bottom "1rem"}}
+          [:header [:strong (:name t)]]
+          [:p (str (:n-microcycles t) " weeks • " (count (:workouts t)) " days/week")]
+          (if (= (:name t) current-name)
+            [:button.secondary {:disabled true} "Current"]
+            [:button {:on-click #(do (plan/set-template! t) (reset! current-page :workouts))} "Use This Plan"])]))]
      [:section
       [:h2 "Import Plan"]
-      [:p "Import a plan from EDN file"]
-      [:input {:type "file"
-               :accept ".edn"
-               :on-change handle-file-select}]]]))
+      [:input {:type "file" :accept ".edn"
+               :on-change (fn [e]
+                            (when-let [f (-> e .-target .-files (aget 0))]
+                              (-> (.text f)
+                                  (.then (fn [text]
+                                           (try
+                                             (let [t (reader/read-string text)]
+                                               (if-let [err (plan/validate-template t)]
+                                                 (js/alert (str "Invalid: " err))
+                                                 (do (plan/set-template! t)
+                                                     (js/alert (str "Imported: " (:name t)))
+                                                     (reset! current-page :workouts))))
+                                             (catch :default ex
+                                               (js/alert (str "Parse error: " (.-message ex))))))))))}]]]))
 
-(defn- settings-page
-  "App settings page."
-  []
+(defn- settings-page []
   [:<>
-   [:header
-    [:h1 "Settings"]
-    [:p "Configure the app"]]
-
+   [:header [:h1 "Settings"] [:p "Configure the app"]]
    [:section
     [:h2 "Data"]
-    [:button.secondary {:on-click #(js/console.log "Export data")}
-     "Export All Data"]
+    [:button.secondary {:on-click #(js/console.log "Export data")} "Export All Data"]
     [:button.secondary.outline {:style {:margin-left "0.5rem"}
-                                :on-click #(when (js/confirm "Clear all workout logs?")
-                                             (storage/clear-db!))}
+                                :on-click #(when (js/confirm "Clear all workout logs?") (storage/clear-db!))}
      "Clear Logs"]]
+   [:section [:h2 "About"] [:p "Romance Progression"] [:small "Local-first PWA for workout tracking"]]])
 
-   [:section
-    [:h2 "About"]
-    [:p "Romance Progression"]
-    [:small "Local-first PWA for workout tracking"]]])
-
-(defn app
-  "Main app component - renders navigation and current page."
-  []
+(defn app []
   [:div
    [nav-menu]
    [:main.container
-    (case @current-page
-      :workouts [workouts-page]
-      :plans    [plans-page]
-      :settings [settings-page]
-      [workouts-page])
-
+    (case @current-page :workouts [workouts-page] :plans [plans-page] :settings [settings-page] [workouts-page])
     [:footer {:style {:margin-top "2rem" :text-align "center"}}
      [:small "Romance Progression • Local-first PWA"]]]])

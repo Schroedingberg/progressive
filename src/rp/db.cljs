@@ -1,110 +1,89 @@
 (ns rp.db
   "DataScript-based event store for workout logging.
   
-  Events are stored as immutable facts. The `log-set!` function appends
-  new events, and `get-all-events` returns them for state reconstruction."
+  Events are stored as immutable facts with automatic id/timestamp.
+  Use `get-all-events` to retrieve for state reconstruction."
   (:require [datascript.core :as d]
             [reagent.core :as r]
             [cljs.reader :as reader]))
 
 (def ^:private schema
-  {:event/id               {:db/unique :db.unique/identity}
-   :event/type             {}
-   :event/mesocycle        {}
-   :event/microcycle       {}
-   :event/workout          {}
-   :event/exercise         {}
-   :event/set-index        {}
-   :event/performed-weight {}
-   :event/performed-reps   {}
-   :event/prescribed-weight {}
-   :event/prescribed-reps  {}
-   :event/timestamp        {}
-   ;; Feedback events
-   :event/muscle-group     {}
-   :event/soreness         {}
-   :event/pump             {}
-   :event/joint-pain       {}
-   :event/sets-workload    {}})
+  {:event/id {:db/unique :db.unique/identity}})
 
 (defonce conn (d/create-conn schema))
 (defonce db-version (r/atom 0))
 
-;; Trigger re-renders on DB changes
 (d/listen! conn :ui (fn [_] (swap! db-version inc)))
 
-;; --- Transactions ---
+;; -----------------------------------------------------------------------------
+;; Helpers
+;; -----------------------------------------------------------------------------
 
-(defn log-set!
-  "Log a completed set. Returns the transaction result."
-  [{:keys [mesocycle microcycle workout exercise set-index weight reps
-           prescribed-weight prescribed-reps]}]
-  (d/transact! conn
-               [(cond-> {:event/id (str (random-uuid))
-                         :event/type :set-completed
-                         :event/mesocycle mesocycle
-                         :event/microcycle microcycle
-                         :event/workout workout
-                         :event/exercise exercise
-                         :event/set-index set-index
-                         :event/performed-weight weight
-                         :event/performed-reps reps
-                         :event/timestamp (js/Date.now)}
-                  prescribed-weight (assoc :event/prescribed-weight prescribed-weight)
-                  prescribed-reps (assoc :event/prescribed-reps prescribed-reps))]))
+(defn- ns-keys
+  "Add :event/ namespace to all keys."
+  [m]
+  (into {} (map (fn [[k v]] [(keyword "event" (name k)) v])) m))
 
-(defn skip-set!
-  "Log a skipped set event."
-  [{:keys [mesocycle microcycle workout exercise set-index]}]
-  (d/transact! conn
-               [{:event/id (str (random-uuid))
-                 :event/type :set-skipped
-                 :event/mesocycle mesocycle
-                 :event/microcycle microcycle
-                 :event/workout workout
-                 :event/exercise exercise
-                 :event/set-index set-index
-                 :event/timestamp (js/Date.now)}]))
-
-(defn log-soreness-reported!
-  "Log soreness status for a muscle group (after first set).
-  soreness: :never-sore | :healed-early | :healed-just-in-time | :still-sore"
-  [{:keys [mesocycle microcycle workout muscle-group soreness]}]
-  (d/transact! conn
-               [{:event/id (str (random-uuid))
-                 :event/type :soreness-reported
-                 :event/mesocycle mesocycle
-                 :event/microcycle microcycle
-                 :event/workout workout
-                 :event/muscle-group muscle-group
-                 :event/soreness soreness
-                 :event/timestamp (js/Date.now)}]))
-
-(defn log-session-rated!
-  "Log session feedback for a muscle group (after finishing all sets).
-  pump: 0-4, joint-pain: :none | :some | :severe, 
-  sets-workload: :easy | :just-right | :pushed-limits | :too-much"
-  [{:keys [mesocycle microcycle workout muscle-group pump joint-pain sets-workload]}]
-  (d/transact! conn
-               [{:event/id (str (random-uuid))
-                 :event/type :session-rated
-                 :event/mesocycle mesocycle
-                 :event/microcycle microcycle
-                 :event/workout workout
-                 :event/muscle-group muscle-group
-                 :event/pump pump
-                 :event/joint-pain joint-pain
-                 :event/sets-workload sets-workload
-                 :event/timestamp (js/Date.now)}]))
-
-;; --- Queries ---
+(defn- transact-event!
+  "Transact an event with auto-generated id and timestamp."
+  [event]
+  (d/transact! conn [(-> event
+                         ns-keys
+                         (assoc :event/id (str (random-uuid))
+                                :event/timestamp (js/Date.now)))]))
 
 (defn- entity->event
-  "Convert DataScript entity to domain event map."
+  "Convert DataScript entity to plain map (strip :db/id and :event/ prefix)."
   [e]
-  (-> e
-      (dissoc :db/id)
-      (update-keys #(keyword (name %)))))
+  (into {} (keep (fn [[k v]]
+                   (when (not= k :db/id)
+                     [(keyword (name k)) v])))
+        e))
+
+;; -----------------------------------------------------------------------------
+;; Transactions
+;; -----------------------------------------------------------------------------
+
+(defn log-set!
+  "Log a completed set."
+  [{:keys [mesocycle microcycle workout exercise set-index weight reps
+           prescribed-weight prescribed-reps]}]
+  (transact-event!
+   (cond-> {:type :set-completed
+            :mesocycle mesocycle :microcycle microcycle :workout workout
+            :exercise exercise :set-index set-index
+            :performed-weight weight :performed-reps reps}
+     prescribed-weight (assoc :prescribed-weight prescribed-weight)
+     prescribed-reps (assoc :prescribed-reps prescribed-reps))))
+
+(defn skip-set!
+  "Log a skipped set."
+  [{:keys [mesocycle microcycle workout exercise set-index]}]
+  (transact-event!
+   {:type :set-skipped
+    :mesocycle mesocycle :microcycle microcycle :workout workout
+    :exercise exercise :set-index set-index}))
+
+(defn log-soreness-reported!
+  "Log soreness feedback for a muscle group."
+  [{:keys [mesocycle microcycle workout muscle-group soreness]}]
+  (transact-event!
+   {:type :soreness-reported
+    :mesocycle mesocycle :microcycle microcycle :workout workout
+    :muscle-group muscle-group :soreness soreness}))
+
+(defn log-session-rated!
+  "Log session feedback for a muscle group."
+  [{:keys [mesocycle microcycle workout muscle-group pump joint-pain sets-workload]}]
+  (transact-event!
+   {:type :session-rated
+    :mesocycle mesocycle :microcycle microcycle :workout workout
+    :muscle-group muscle-group
+    :pump pump :joint-pain joint-pain :sets-workload sets-workload}))
+
+;; -----------------------------------------------------------------------------
+;; Queries
+;; -----------------------------------------------------------------------------
 
 (defn get-all-events
   "Get all logged events, sorted by timestamp."
@@ -116,7 +95,9 @@
        (map entity->event)
        (sort-by :timestamp)))
 
-;; --- Serialization ---
+;; -----------------------------------------------------------------------------
+;; Serialization
+;; -----------------------------------------------------------------------------
 
 (defn db->edn []
   (pr-str (d/serializable @conn)))
