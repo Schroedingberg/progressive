@@ -49,20 +49,21 @@ The app will be available at http://localhost:3000
 | `npm run test` | Run tests once |
 | `npm run test:watch` | Run tests in watch mode |
 | `npm run clean` | Remove compiled artifacts |
+| `npm run docs` | Start Clerk in watch mode |
+| `npm run docs:build` | Build static documentation |
 
 ### Documentation (Clerk notebooks)
 
 Living documentation is built with [Clerk](https://clerk.vision). To develop locally:
 
 ```bash
-# Start Clerk in watch mode
-clojure -A:dev -M -e "(require 'user) (user/start!)"
+npm run docs
 ```
 
 To build static HTML:
 
 ```bash
-clojure -X:dev:build-docs
+npm run docs:build
 ```
 
 Output goes to `docs/clerk/`.
