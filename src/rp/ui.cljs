@@ -1,10 +1,32 @@
 (ns rp.ui
   "Main app shell: navigation and page routing.
   
+  ## Data-Driven UI Pattern
+  
+  This codebase uses a consistent pattern where UI structure is defined as data,
+  and generic renderers interpret that data. This provides:
+  
+  1. **Discoverability** - See all nav items, pages, actions in one place
+  2. **Consistency** - Same renderer = same behavior everywhere
+  3. **Extensibility** - Add features by adding data, not code
+  
+  ### Pattern examples:
+  
+  ```clojure
+  ;; Navigation: vector of [key label] pairs
+  (def nav-items [[:workouts \"Workouts\"] [:plans \"Plans\"]])
+  
+  ;; Pages: map of page-key → {:title :subtitle :content}
+  (def pages {:workouts {:title \"Workouts\" :content workouts-fn}})
+  
+  ;; Actions: vector of {:label :on-click :confirm?} maps
+  (def actions [{:label \"Clear\" :confirm \"Sure?\" :on-click clear!}])
+  ```
+  
   Components are split into modules:
-    - rp.ui.components - Generic form components
-    - rp.ui.feedback   - Soreness/session rating popups
-    - rp.ui.workout    - Set rows, exercise cards"
+    - rp.ui.components - Generic form primitives (radio-group, modal-dialog)
+    - rp.ui.feedback   - Feedback popup components
+    - rp.ui.workout    - Set/exercise display components"
   (:require [reagent.core :as r]
             [cljs.reader :as reader]
             [clojure.string :as str]
@@ -17,131 +39,202 @@
 
 (defonce current-page (r/atom :workouts))
 
-;; -----------------------------------------------------------------------------
-;; Navigation
-;; -----------------------------------------------------------------------------
+;; =============================================================================
+;; LAYER 1: Layout Primitives
+;; =============================================================================
+
+(defn- page-header [title subtitle]
+  [:header [:h1 title] [:p subtitle]])
+
+(defn- section [title & children]
+  (into [:section [:h2 title]] children))
+
+;; =============================================================================
+;; LAYER 2: Navigation (data-driven)
+;; =============================================================================
+
+(def ^:private nav-items
+  "Navigation tabs. Add a page here to show it in the nav bar."
+  [[:workouts "Workouts"]
+   [:plans    "Plans"]
+   [:settings "Settings"]])
 
 (defn- nav-menu []
   [:nav.container
    [:ul [:li [:strong "RP"]]]
    [:ul
-    (doall
-     (for [[page label] [[:workouts "Workouts"] [:plans "Plans"] [:settings "Settings"]]]
-       ^{:key page}
-       [:li [:a {:href "#" :class (when (= @current-page page) "contrast")
-                 :on-click #(do (.preventDefault %) (reset! current-page page))}
-             label]]))]])
+    (for [[page label] nav-items]
+      ^{:key page}
+      [:li [:a {:href "#" :class (when (= @current-page page) "contrast")
+                :on-click #(do (.preventDefault %) (reset! current-page page))}
+            label]])]])
 
-;; -----------------------------------------------------------------------------
-;; Pages
-;; -----------------------------------------------------------------------------
+;; =============================================================================
+;; LAYER 3: Feedback Orchestration (data-driven)
+;; =============================================================================
 
 (defonce ^:private dismissed-feedback (r/atom #{}))
+
+(def ^:private feedback-types
+  "Feedback popup types. Order matters - first pending type wins."
+  [{:type      :soreness
+    :pending-fn state/pending-soreness-feedback
+    :component  feedback/soreness-popup
+    :log-fn     #(db/log-soreness-reported! (assoc %1 :muscle-group %2 :soreness %3))}
+   {:type      :session
+    :pending-fn state/pending-session-rating
+    :component  feedback/session-rating-popup
+    :log-fn     #(db/log-session-rated! (merge %1 {:muscle-group %2} %3))}])
 
 (defn- workout-muscle-groups [exercises-map]
   (->> exercises-map vals (mapcat identity) (mapcat :muscle-groups) (remove nil?) distinct))
 
-(defn- workouts-page []
+(defn- dismiss-key [active type mg]
+  [type (:mesocycle active) (:microcycle active) (:workout active) mg])
+
+(defn- find-pending-feedback
+  "Find first pending feedback (type + muscle-group) that hasn't been dismissed."
+  [{:keys [events progress active dismissed]}]
+  (when active
+    (let [workout-ex (get-in progress [(:mesocycle active) (:microcycle active) (:workout active)])
+          muscle-groups (workout-muscle-groups workout-ex)]
+      (some (fn [{:keys [type pending-fn]}]
+              (when-let [mg (->> (pending-fn events progress active muscle-groups)
+                                 (remove #(contains? dismissed (dismiss-key active type %)))
+                                 first)]
+                {:type type :muscle-group mg}))
+            feedback-types))))
+
+(defn- render-feedback-popup [{:keys [type muscle-group]} active]
+  (let [{:keys [component log-fn]} (first (filter #(= (:type %) type) feedback-types))]
+    [component
+     {:muscle-group muscle-group
+      :on-submit (fn [mg data] (log-fn active mg data))
+      :on-dismiss #(swap! dismissed-feedback conj (dismiss-key active type %))}]))
+
+;; =============================================================================
+;; LAYER 4: Page Content
+;; =============================================================================
+
+;; --- Workouts ---
+
+(defn- week-section [plan-name week workouts]
+  [:section
+   [:h2 (str "Week " (inc week))]
+   (for [[day exercises] workouts]
+     ^{:key day}
+     [:section
+      [:h3 (str/capitalize (name day))]
+      (for [[ex-name sets] exercises]
+        ^{:key ex-name}
+        [workout/exercise-card plan-name week day ex-name sets])])])
+
+(defn- workouts-content []
   (let [events (db/get-all-events)
-        plan (plan/get-plan)
         plan-name (plan/get-plan-name)
-        progress (state/view-progress-in-plan events plan)
+        progress (state/view-progress-in-plan events (plan/get-plan))
         mesocycle-data (get progress plan-name)
-        
         active (state/last-active-workout events)
-        workout-ex (when active (get-in progress [(:mesocycle active) (:microcycle active) (:workout active)]))
-        muscle-groups (when workout-ex (workout-muscle-groups workout-ex))
-        dismissed @dismissed-feedback
-        
-        dismiss-key (fn [type mg] [type (:mesocycle active) (:microcycle active) (:workout active) mg])
-        
-        pending-soreness (when active
-                           (->> (state/pending-soreness-feedback events progress active muscle-groups)
-                                (remove #(contains? dismissed (dismiss-key :soreness %)))
-                                first))
-        pending-session (when (and active (not pending-soreness))
-                          (->> (state/pending-session-rating events progress active muscle-groups)
-                               (remove #(contains? dismissed (dismiss-key :session %)))
-                               first))]
+        pending (find-pending-feedback {:events events :progress progress
+                                        :active active :dismissed @dismissed-feedback})]
     [:<>
-     (when pending-soreness
-       [feedback/soreness-popup
-        {:muscle-group pending-soreness
-         :on-submit (fn [mg s] (db/log-soreness-reported! (assoc active :muscle-group mg :soreness s)))
-         :on-dismiss (fn [mg] (swap! dismissed-feedback conj (dismiss-key :soreness mg)))}])
-     
-     (when pending-session
-       [feedback/session-rating-popup
-        {:muscle-group pending-session
-         :on-submit (fn [mg data] (db/log-session-rated! (merge active {:muscle-group mg} data)))
-         :on-dismiss (fn [mg] (swap! dismissed-feedback conj (dismiss-key :session mg)))}])
-     
-     [:header [:h1 plan-name] [:p "Track your workout progression"]]
-     
-     (doall
-      (for [[week workouts] (sort-by first mesocycle-data)]
-        ^{:key week}
-        [:section
-         [:h2 (str "Week " (inc week))]
-         (doall
-          (for [[day exercises] workouts]
-            ^{:key day}
-            [:section
-             [:h3 (str/capitalize (name day))]
-             (doall
-              (for [[ex-name sets] exercises]
-                ^{:key ex-name}
-                [workout/exercise-card plan-name week day ex-name sets]))]))]))]))
+     (when pending [render-feedback-popup pending active])
+     (for [[week workouts] (sort-by first mesocycle-data)]
+       ^{:key week}
+       [week-section plan-name week workouts])]))
 
-(defn- plans-page []
-  (let [current-template (plan/get-template)
-        current-name (:name current-template)]
+;; --- Plans ---
+
+(defn- plan-card [{:keys [template current? on-select]}]
+  [:article {:style {:margin-bottom "1rem"}}
+   [:header [:strong (:name template)]]
+   [:p (str (:n-microcycles template) " weeks • " (count (:workouts template)) " days/week")]
+   (if current?
+     [:button.secondary {:disabled true} "Current"]
+     [:button {:on-click on-select} "Use This Plan"])])
+
+(defn- import-plan! [text]
+  (try
+    (let [t (reader/read-string text)]
+      (if-let [err (plan/validate-template t)]
+        (js/alert (str "Invalid: " err))
+        (do (plan/set-template! t)
+            (js/alert (str "Imported: " (:name t)))
+            (reset! current-page :workouts))))
+    (catch :default ex
+      (js/alert (str "Parse error: " (.-message ex))))))
+
+(defn- file-input [{:keys [accept on-file]}]
+  [:input {:type "file" :accept accept
+           :on-change (fn [e]
+                        (when-let [f (-> e .-target .-files (aget 0))]
+                          (-> (.text f) (.then on-file))))}])
+
+(defn- plans-content []
+  (let [current-name (:name (plan/get-template))]
     [:<>
-     [:header [:h1 "Plans"] [:p "Manage your workout plans"]]
-     [:section [:h2 "Current Plan"] [:p [:strong current-name]]]
-     [:section
-      [:h2 "Available Plans"]
-      (doall
-       (for [t plan/available-templates]
-         ^{:key (:name t)}
-         [:article {:style {:margin-bottom "1rem"}}
-          [:header [:strong (:name t)]]
-          [:p (str (:n-microcycles t) " weeks • " (count (:workouts t)) " days/week")]
-          (if (= (:name t) current-name)
-            [:button.secondary {:disabled true} "Current"]
-            [:button {:on-click #(do (plan/set-template! t) (reset! current-page :workouts))} "Use This Plan"])]))]
-     [:section
-      [:h2 "Import Plan"]
-      [:input {:type "file" :accept ".edn"
-               :on-change (fn [e]
-                            (when-let [f (-> e .-target .-files (aget 0))]
-                              (-> (.text f)
-                                  (.then (fn [text]
-                                           (try
-                                             (let [t (reader/read-string text)]
-                                               (if-let [err (plan/validate-template t)]
-                                                 (js/alert (str "Invalid: " err))
-                                                 (do (plan/set-template! t)
-                                                     (js/alert (str "Imported: " (:name t)))
-                                                     (reset! current-page :workouts))))
-                                             (catch :default ex
-                                               (js/alert (str "Parse error: " (.-message ex))))))))))}]]]))
+     [section "Current Plan" [:p [:strong current-name]]]
+     [section "Available Plans"
+      (for [t plan/available-templates]
+        ^{:key (:name t)}
+        [plan-card {:template t
+                    :current? (= (:name t) current-name)
+                    :on-select #(do (plan/set-template! t) (reset! current-page :workouts))}])]
+     [section "Import Plan" [file-input {:accept ".edn" :on-file import-plan!}]]]))
 
-(defn- settings-page []
+;; --- Settings (data-driven actions) ---
+
+(def ^:private settings-actions
+  "Settings buttons. Add {:confirm \"...\"} to require confirmation."
+  [{:label "Export All Data" :class "secondary"
+    :on-click #(js/console.log "Export data")}
+   {:label "Clear Logs" :class "secondary.outline"
+    :confirm "Clear all workout logs?"
+    :on-click storage/clear-db!}])
+
+(defn- action-button [{:keys [label class confirm on-click]}]
+  [(keyword (str "button." class))
+   {:on-click (if confirm #(when (js/confirm confirm) (on-click)) on-click)}
+   label])
+
+(defn- settings-content []
   [:<>
-   [:header [:h1 "Settings"] [:p "Configure the app"]]
-   [:section
-    [:h2 "Data"]
-    [:button.secondary {:on-click #(js/console.log "Export data")} "Export All Data"]
-    [:button.secondary.outline {:style {:margin-left "0.5rem"}
-                                :on-click #(when (js/confirm "Clear all workout logs?") (storage/clear-db!))}
-     "Clear Logs"]]
-   [:section [:h2 "About"] [:p "Romance Progression"] [:small "Local-first PWA for workout tracking"]]])
+   [section "Data"
+    [:div {:style {:display "flex" :gap "0.5rem"}}
+     (for [{:keys [label] :as action} settings-actions]
+       ^{:key label}
+       [action-button action])]]
+   [section "About"
+    [:p "Romance Progression"]
+    [:small "Local-first PWA for workout tracking"]]])
+
+;; =============================================================================
+;; LAYER 5: App Shell (data-driven pages)
+;; =============================================================================
+
+(def ^:private pages
+  "Page definitions. :title can be a string or (fn [] string) for dynamic titles."
+  {:workouts {:title    (fn [] (plan/get-plan-name))
+              :subtitle "Track your workout progression"
+              :content  workouts-content}
+   :plans    {:title    "Plans"
+              :subtitle "Manage your workout plans"
+              :content  plans-content}
+   :settings {:title    "Settings"
+              :subtitle "Configure the app"
+              :content  settings-content}})
+
+(defn- render-page [page-key]
+  (let [{:keys [title subtitle content]} (get pages page-key (pages :workouts))
+        title-text (if (fn? title) (title) title)]
+    [:<>
+     [page-header title-text subtitle]
+     [content]]))
 
 (defn app []
   [:div
    [nav-menu]
    [:main.container
-    (case @current-page :workouts [workouts-page] :plans [plans-page] :settings [settings-page] [workouts-page])
+    [render-page @current-page]
     [:footer {:style {:margin-top "2rem" :text-align "center"}}
      [:small "Romance Progression • Local-first PWA"]]]])
