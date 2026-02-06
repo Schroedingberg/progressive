@@ -111,7 +111,26 @@
                   {:mesocycle "P" :microcycle 0 :workout :mon :exercise "A"
                    :set-index 1 :performed-weight 100 :timestamp 2000}]
           result (#'state/dedupe-by-latest events)]
-      (is (= 2 (count result))))))
+      (is (= 2 (count result)))))
+
+  (testing "skipped overwrites completed when later"
+    (let [events [{:mesocycle "P" :microcycle 0 :workout :mon :exercise "A"
+                   :set-index 0 :type :set-completed :performed-weight 100 :timestamp 1000}
+                  {:mesocycle "P" :microcycle 0 :workout :mon :exercise "A"
+                   :set-index 0 :type :set-skipped :timestamp 2000}]
+          result (#'state/dedupe-by-latest events)]
+      (is (= 1 (count result)))
+      (is (= :set-skipped (:type (first result))))))
+
+  (testing "completed overwrites skipped when later (undo skip)"
+    (let [events [{:mesocycle "P" :microcycle 0 :workout :mon :exercise "A"
+                   :set-index 0 :type :set-skipped :timestamp 1000}
+                  {:mesocycle "P" :microcycle 0 :workout :mon :exercise "A"
+                   :set-index 0 :type :set-completed :performed-weight 100 :timestamp 2000}]
+          result (#'state/dedupe-by-latest events)]
+      (is (= 1 (count result)))
+      (is (= :set-completed (:type (first result))))
+      (is (= 100 (:performed-weight (first result)))))))
 
 ;; =============================================================================
 ;; events->plan-map tests (internal function)

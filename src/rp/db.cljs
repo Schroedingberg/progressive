@@ -47,6 +47,19 @@
                   prescribed-weight (assoc :event/prescribed-weight prescribed-weight)
                   prescribed-reps (assoc :event/prescribed-reps prescribed-reps))]))
 
+(defn skip-set!
+  "Log a skipped set event."
+  [{:keys [mesocycle microcycle workout exercise set-index]}]
+  (d/transact! conn
+               [{:event/id (str (random-uuid))
+                 :event/type :set-skipped
+                 :event/mesocycle mesocycle
+                 :event/microcycle microcycle
+                 :event/workout workout
+                 :event/exercise exercise
+                 :event/set-index set-index
+                 :event/timestamp (js/Date.now)}]))
+
 ;; --- Queries ---
 
 (defn- entity->event
