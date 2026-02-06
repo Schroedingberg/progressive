@@ -223,7 +223,23 @@
      [:section
       [:h2 "Import Plan"]
       [:p "Import a plan from EDN file"]
-      [:input {:type "file" :accept ".edn"}]]]))
+      [:input {:type "file"
+               :accept ".edn"
+               :on-change
+               (fn [e]
+                 (when-let [file (-> e .-target .-files (aget 0))]
+                   (-> (.text file)
+                       (.then (fn [text]
+                                (try
+                                  (let [template (cljs.reader/read-string text)]
+                                    (if-let [err (plan/validate-template template)]
+                                      (js/alert (str "Invalid plan: " err))
+                                      (do
+                                        (plan/set-template! template)
+                                        (js/alert (str "Imported: " (:name template)))
+                                        (reset! current-page :workouts))))
+                                  (catch :default ex
+                                    (js/alert (str "Parse error: " (.-message ex)))))))))))}]]])))
 
 (defn- settings-page
   "App settings page."

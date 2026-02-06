@@ -319,3 +319,35 @@
     (is (= [] (#'state/merge-sets [] [])))
     (is (= [{:a 1}] (#'state/merge-sets [{:a 1}] [])))
     (is (= [{:b 1}] (#'state/merge-sets [] [{:b 1}])))))
+
+;; =============================================================================
+;; validate-template tests
+;; =============================================================================
+
+(deftest validate-template-test
+  (testing "valid template returns nil"
+    (is (nil? (plan/validate-template
+               {:name "Test Plan"
+                :n-microcycles 4
+                :workouts {:monday {:exercises {"Squat" {:n-sets 3}}}}}))))
+
+  (testing "rejects non-map"
+    (is (string? (plan/validate-template "not a map")))
+    (is (string? (plan/validate-template nil))))
+
+  (testing "requires :name string"
+    (is (string? (plan/validate-template {:n-microcycles 4 :workouts {}})))
+    (is (string? (plan/validate-template {:name 123 :n-microcycles 4 :workouts {}}))))
+
+  (testing "requires :n-microcycles positive integer"
+    (is (string? (plan/validate-template {:name "X" :workouts {}})))
+    (is (string? (plan/validate-template {:name "X" :n-microcycles 0 :workouts {}})))
+    (is (string? (plan/validate-template {:name "X" :n-microcycles -1 :workouts {}}))))
+
+  (testing "requires :workouts map with keyword keys"
+    (is (string? (plan/validate-template {:name "X" :n-microcycles 4})))
+    (is (string? (plan/validate-template {:name "X" :n-microcycles 4 :workouts {"monday" {}}}))))
+
+  (testing "requires each workout to have :exercises map"
+    (is (string? (plan/validate-template 
+                  {:name "X" :n-microcycles 4 :workouts {:monday {}}})))))

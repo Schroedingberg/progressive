@@ -97,3 +97,27 @@
   [template]
   (.setItem js/localStorage PLAN-KEY (pr-str template))
   (reset! template-atom template))
+
+(defn validate-template
+  "Return nil if valid, error message string if invalid."
+  [template]
+  (cond
+    (not (map? template))
+    "Plan must be a map"
+
+    (not (string? (:name template)))
+    "Plan must have a :name string"
+
+    (not (pos-int? (:n-microcycles template)))
+    "Plan must have :n-microcycles (positive integer)"
+
+    (not (map? (:workouts template)))
+    "Plan must have :workouts map"
+
+    (not (every? keyword? (keys (:workouts template))))
+    "Workout days must be keywords (e.g. :monday)"
+
+    (not (every? #(map? (:exercises %)) (vals (:workouts template))))
+    "Each workout must have an :exercises map"
+
+    :else nil))

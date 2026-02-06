@@ -1,0 +1,19 @@
+;; Sample plan template for Romance Progression
+;; Save this file with a .edn extension and import via Plans > Import Plan
+
+{:name "My Custom Plan"
+ :n-microcycles 4  ; number of weeks
+
+ :workouts
+ {:monday
+  {:exercises
+   {"Barbell Squat"    {:n-sets 3 :muscle-groups [:quads :glutes]}
+    "Romanian Deadlift" {:n-sets 3 :muscle-groups [:hamstrings :glutes]}
+    "Leg Press"        {:n-sets 2 :muscle-groups [:quads]}}}
+
+  :thursday
+  {:exercises
+   {"Bench Press"      {:n-sets 3 :muscle-groups [:chest :triceps]}
+    "Barbell Row"      {:n-sets 3 :muscle-groups [:back :biceps]}
+    "Overhead Press"   {:n-sets 2 :muscle-groups [:shoulders]}
+    "Face Pull"        {:n-sets 2 :muscle-groups [:rear-delts]}}}}}
