@@ -99,6 +99,3 @@ The app uses an **event sourcing** pattern:
 
 **Key insight**: Your workout log is just a flat list of events. To show progress, we transform events into a nested structure matching the plan, then deep-merge them. This means you can deviate from the plan (extra sets, different exercises) and your data stays intact. You can also swap progression algorithms without data migration.
 
-## License
-
-MIT
