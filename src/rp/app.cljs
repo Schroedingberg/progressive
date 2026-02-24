@@ -8,7 +8,6 @@
   - Event handlers call domain functions and trigger re-render
   - HTML built with helper functions, then set via innerHTML"
   (:require [clojure.string :as str]
-            [cljs.reader :as reader]
             [rp.config :as config]
             [rp.events :as events]
             [rp.plan :as plan]
@@ -22,14 +21,32 @@
 (def ^:private app-state
   (atom {:page :workouts
          :dismissed-feedback #{}
-         :inputs {}}))  ; {[exercise set-index] {:weight "" :reps ""}}
+         :inputs {}       ; {[exercise set-index] {:weight "" :reps ""}}
+         :feedback nil    ; {:type :soreness/:session :muscle-group :quads :loc {...}}
+         :swapping nil    ; exercise name being swapped
+         :swap-input ""}))
+
+;; Feedback options
+(def ^:private soreness-options
+  [[:never-sore "Never got sore"]
+   [:healed-early "Healed a while ago"]
+   [:healed-just-in-time "Healed just in time"]
+   [:still-sore "Still sore"]])
+
+(def ^:private workload-options
+  [[:easy "Easy"] [:just-right "Just right"]
+   [:pushed-limits "Pushed my limits"] [:too-much "Too much"]])
+
+(def ^:private joint-pain-options
+  [[:none "No pain"] [:some "Some discomfort"] [:severe "Significant pain"]])
+
+(def ^:private pump-labels ["None" "Mild" "Moderate" "Great" "Best ever"])
 
 ;; -----------------------------------------------------------------------------
 ;; DOM helpers
 ;; -----------------------------------------------------------------------------
 
 (defn- $ [sel] (.querySelector js/document sel))
-(defn- $$ [sel] (array-seq (.querySelectorAll js/document sel)))
 
 (defn- el
   "Create element: (el :div.class {:onclick f} \"text\" child-el)"
@@ -62,6 +79,107 @@
 ;; -----------------------------------------------------------------------------
 
 (declare render!)
+
+;; --- Feedback modals ---
+
+(defn- dismiss-key [loc type mg]
+  [type (:mesocycle loc) (:microcycle loc) (:workout loc) mg])
+
+(defn- render-radio-group [name options selected on-change]
+  (apply el :div {:style {:display "flex" :flexDirection "column" :gap "0.25rem"}}
+         (for [[value label] options]
+           (el :label {:style {:display "flex" :alignItems "center" :gap "0.5rem"}}
+               (el :input {:type "radio"
+                           :name name
+                           :checked (= selected value)
+                           :onchange (fn [_] (on-change value))})
+               label))))
+
+(defn- render-soreness-popup [muscle-group loc]
+  (let [selected (atom nil)]
+    (fn []
+      (el :dialog {:open true :style {:maxWidth "400px"}}
+          (el :article {}
+              (el :header {}
+                  (el :h3 {} (str "How's your " (name muscle-group) "?"))
+                  (el :p {} "Since your last session..."))
+              (render-radio-group "soreness" soreness-options @selected
+                                  (fn [v] (reset! selected v) (render!)))
+              (el :footer {:style {:marginTop "1rem"}}
+                  (el :button {:disabled (nil? @selected)
+                               :onclick (fn [_]
+                                          (events/log-soreness-reported!
+                                           (assoc loc :muscle-group muscle-group :soreness @selected))
+                                          (swap! app-state assoc :feedback nil)
+                                          (render!))}
+                      "Submit")
+                  (el :button.secondary {:style {:marginLeft "0.5rem"}
+                                         :onclick (fn [_]
+                                                    (swap! app-state update :dismissed-feedback
+                                                           conj (dismiss-key loc :soreness muscle-group))
+                                                    (swap! app-state assoc :feedback nil)
+                                                    (render!))}
+                      "Skip")))))))
+
+(defn- render-session-popup [muscle-group loc]
+  (let [pump (atom 2)
+        joint-pain (atom :none)
+        workload (atom :just-right)]
+    (fn []
+      (el :dialog {:open true :style {:maxWidth "450px"}}
+          (el :article {}
+              (el :header {}
+                  (el :h3 {} (str "Rate your " (name muscle-group) " session")))
+              ;; Pump slider
+              (el :div {:style {:marginBottom "1rem"}}
+                  (el :label {} (str "Pump: " (get pump-labels @pump)))
+                  (el :input {:type "range" :min "0" :max "4" :value (str @pump)
+                              :oninput (fn [e] (reset! pump (js/parseInt (.-value (.-target e)))) (render!))}))
+              ;; Joint pain
+              (el :div {:style {:marginBottom "1rem"}}
+                  (el :label {} "Joint pain:")
+                  (render-radio-group "joint-pain" joint-pain-options @joint-pain
+                                      (fn [v] (reset! joint-pain v) (render!))))
+              ;; Workload
+              (el :div {:style {:marginBottom "1rem"}}
+                  (el :label {} "Number of sets felt:")
+                  (render-radio-group "workload" workload-options @workload
+                                      (fn [v] (reset! workload v) (render!))))
+              (el :footer {:style {:marginTop "1rem"}}
+                  (el :button {:onclick (fn [_]
+                                          (events/log-session-rated!
+                                           (assoc loc :muscle-group muscle-group
+                                                  :pump @pump :joint-pain @joint-pain :sets-workload @workload))
+                                          (swap! app-state assoc :feedback nil)
+                                          (render!))}
+                      "Submit")
+                  (el :button.secondary {:style {:marginLeft "0.5rem"}
+                                         :onclick (fn [_]
+                                                    (swap! app-state update :dismissed-feedback
+                                                           conj (dismiss-key loc :session muscle-group))
+                                                    (swap! app-state assoc :feedback nil)
+                                                    (render!))}
+                      "Skip")))))))
+
+(defn- get-workout-muscle-groups [exercises-map]
+  (->> exercises-map vals (mapcat identity) (mapcat :muscle-groups) (remove nil?) distinct))
+
+(defn- find-pending-feedback [events progress loc dismissed]
+  (when loc
+    (let [workout-ex (get-in progress [(:mesocycle loc) (:microcycle loc) (:workout loc)])
+          muscle-groups (get-workout-muscle-groups workout-ex)]
+      ;; Check soreness first
+      (if-let [mg (->> (state/pending-soreness-feedback events progress loc muscle-groups)
+                       (remove #(contains? dismissed (dismiss-key loc :soreness %)))
+                       first)]
+        {:type :soreness :muscle-group mg :loc loc}
+        ;; Then session rating
+        (when-let [mg (->> (state/pending-session-rating events progress loc muscle-groups)
+                           (remove #(contains? dismissed (dismiss-key loc :session %)))
+                           first)]
+          {:type :session :muscle-group mg :loc loc})))))
+
+;; --- Inputs ---
 
 (defn- input-key [exercise idx] [exercise idx])
 
@@ -128,45 +246,97 @@
                                 (render!)))}
                   "skip"))))))
 
-(defn- render-exercise [meso micro workout-key exercise sets extra-count]
+(defn- render-exercise [meso micro workout-key exercise sets extra-count original-exercise]
   (let [muscle-groups (some :muscle-groups sets)
-        total (+ (count sets) extra-count)]
+        total (+ (count sets) extra-count)
+        swapping? (= (:swapping @app-state) exercise)
+        swap-input (:swap-input @app-state)]
     (el :article {}
-        (el :h4 {} exercise
+        (el :h4 {:style {:display "flex" :alignItems "center" :gap "0.5rem"}}
+            exercise
+            (when original-exercise
+              (el :small {:style {:opacity "0.5"}} (str "(was: " original-exercise ")")))
             (when muscle-groups
               (el :small {:style {:fontWeight "normal" :marginLeft "0.5rem" :opacity "0.6"}}
                   (str/join ", " (map name muscle-groups)))))
+        ;; Swap UI
+        (when swapping?
+          (el :div {:style {:display "flex" :gap "0.5rem" :marginBottom "0.5rem" :alignItems "center"}}
+              (el :input {:type "text"
+                          :placeholder "Replacement exercise name"
+                          :value swap-input
+                          :style {:flex "1"}
+                          :oninput (fn [e] (swap! app-state assoc :swap-input (.-value (.-target e))) (render!))})
+              (el :button.secondary {:type "button"
+                                     :disabled (empty? swap-input)
+                                     :onclick (fn [_]
+                                                (when (js/confirm (str "Swap " exercise " for " swap-input "?"))
+                                                  (events/swap-exercise!
+                                                   {:mesocycle meso :microcycle micro :workout workout-key
+                                                    :original-exercise (or original-exercise exercise)
+                                                    :replacement-exercise swap-input
+                                                    :muscle-groups muscle-groups})
+                                                  (swap! app-state assoc :swapping nil :swap-input "")
+                                                  (render!)))}
+                  "Confirm")
+              (el :button.secondary.outline {:type "button"
+                                             :onclick (fn [_]
+                                                        (swap! app-state assoc :swapping nil :swap-input "")
+                                                        (render!))}
+                  "Cancel")))
+        ;; Sets
         (apply el :div {}
                (for [idx (range total)]
                  (render-set-row meso micro workout-key exercise idx (get sets idx {}) muscle-groups)))
-        (el :button.outline
-            {:type "button"
-             :style {:padding "0.25rem 0.75rem"}
-             :onclick (fn [_]
-                        (swap! app-state update-in [:extra-sets exercise] (fnil inc 0))
-                        (render!))}
-            "+ Add set"))))
+        ;; Buttons
+        (el :div {:style {:display "flex" :gap "0.5rem"}}
+            (el :button.outline
+                {:type "button"
+                 :style {:padding "0.25rem 0.75rem"}
+                 :onclick (fn [_]
+                            (swap! app-state update-in [:extra-sets exercise] (fnil inc 0))
+                            (render!))}
+                "+ Add set")
+            (when-not swapping?
+              (el :button.secondary.outline
+                  {:type "button"
+                   :style {:padding "0.25rem 0.75rem"}
+                   :onclick (fn [_]
+                              (swap! app-state assoc :swapping exercise :swap-input "")
+                              (render!))}
+                  "Swap"))))))
 
 (defn- render-workouts []
   (let [all-events (events/get-all-events)
         plan-name (plan/get-plan-name)
         progress (state/view-progress-in-plan all-events (plan/get-plan))
-        mesocycle-data (get progress plan-name)]
-    (apply el :div {}
-           (for [[week workouts] (sort-by first mesocycle-data)]
-             (el :section {}
-                 (el :h2 {} (str "Week " (inc week)))
-                 (apply el :div {}
-                        (for [[day exercises] workouts]
-                          (let [loc {:mesocycle plan-name :microcycle week :workout day}
-                                swaps (state/get-swaps all-events loc)
-                                swapped (state/apply-swaps exercises swaps)]
-                            (el :section {}
-                                (el :h3 {} (str/capitalize (name day)))
-                                (apply el :div {}
-                                       (for [[ex-name sets] swapped]
-                                         (render-exercise plan-name week day ex-name sets
-                                                          (get-in @app-state [:extra-sets ex-name] 0)))))))))))))
+        mesocycle-data (get progress plan-name)
+        active (state/last-active-workout all-events)
+        pending (find-pending-feedback all-events progress active (:dismissed-feedback @app-state))]
+    (el :div {}
+        ;; Feedback popup
+        (when pending
+          (case (:type pending)
+            :soreness ((render-soreness-popup (:muscle-group pending) (:loc pending)))
+            :session ((render-session-popup (:muscle-group pending) (:loc pending)))
+            nil))
+        ;; Workouts
+        (apply el :div {}
+               (for [[week workouts] (sort-by first mesocycle-data)]
+                 (el :section {}
+                     (el :h2 {} (str "Week " (inc week)))
+                     (apply el :div {}
+                            (for [[day exercises] workouts]
+                              (let [loc {:mesocycle plan-name :microcycle week :workout day}
+                                    swaps (state/get-swaps all-events loc)
+                                    swapped (state/apply-swaps exercises swaps)]
+                                (el :section {}
+                                    (el :h3 {} (str/capitalize (name day)))
+                                    (apply el :div {}
+                                           (for [[ex-name sets] swapped]
+                                             (render-exercise plan-name week day ex-name sets
+                                                              (get-in @app-state [:extra-sets ex-name] 0)
+                                                              (some :original-exercise sets))))))))))))))
 
 (defn- render-plans []
   (let [current-name (:name (plan/get-template))]
