@@ -1,8 +1,7 @@
 (ns rp.state-test
   (:require [cljs.test :refer [deftest is testing]]
             [rp.state :as state]
-            [rp.plan :as plan]
-            [rp.util :as util]))
+            [rp.plan :as plan]))
 
 ;; --- Test data ---
 
@@ -39,31 +38,31 @@
     (let [base {:a {:b 1}}
           overlay {:a {:c 2}}]
       (is (= {:a {:b 1 :c 2}}
-             (util/deep-merge-with (fn [_ x] x) overlay base)))))
+             (state/deep-merge-with (fn [_ x] x) overlay base)))))
 
   (testing "applies function at leaf nodes"
     (let [base {:a [1 2]}
           overlay {:a [3 4]}]
       (is (= {:a [3 4 1 2]}
-             (util/deep-merge-with into overlay base)))))
+             (state/deep-merge-with into overlay base)))))
 
   (testing "preserves keys only in first map"
     (let [m1 {:a 1 :b 2}
           m2 {:a 10}]
       (is (= {:a 10 :b 2}
-             (util/deep-merge-with (fn [_ x] x) m1 m2)))))
+             (state/deep-merge-with (fn [_ x] x) m1 m2)))))
 
   (testing "preserves keys only in second map"
     (let [m1 {:a 1}
           m2 {:a 10 :b 20}]
       (is (= {:a 10 :b 20}
-             (util/deep-merge-with (fn [_ x] x) m1 m2)))))
+             (state/deep-merge-with (fn [_ x] x) m1 m2)))))
 
   (testing "handles deeply nested structures"
     (let [m1 {:a {:b {:c 1}}}
           m2 {:a {:b {:d 2}}}]
       (is (= {:a {:b {:c 1 :d 2}}}
-             (util/deep-merge-with (fn [_ x] x) m1 m2))))))
+             (state/deep-merge-with (fn [_ x] x) m1 m2))))))
 
 ;; =============================================================================
 ;; dedupe-by-latest tests (corrections via latest-wins)

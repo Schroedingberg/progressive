@@ -20,4 +20,4 @@
     (println (str "[build] Injecting version: " version))
     (update-in build-state 
                [:compiler-options :closure-defines] 
-               assoc 'rp.config/VERSION version)))
+               assoc 'rp.app/VERSION version)))

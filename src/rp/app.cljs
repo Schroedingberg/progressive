@@ -8,11 +8,13 @@
   - Event handlers call domain functions and trigger re-render
   - HTML built with helper functions, then set via innerHTML"
   (:require [clojure.string :as str]
-            [rp.config :as config]
             [rp.events :as events]
             [rp.plan :as plan]
             [rp.progression :as prog]
             [rp.state :as state]))
+
+;; Version injected at build time via :closure-defines
+(goog-define VERSION "dev")
 
 ;; -----------------------------------------------------------------------------
 ;; State
@@ -395,7 +397,7 @@
             (el :li {}
                 (el :strong {} "RP")
                 (el :small {:style {:marginLeft "0.5rem" :opacity "0.6"}}
-                    (str "v" config/VERSION))))
+                    (str "v" VERSION))))
         (apply el :ul {}
                (for [[k label] nav-items]
                  (el :li {}

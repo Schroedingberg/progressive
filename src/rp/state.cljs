@@ -5,8 +5,28 @@
   - A flat list of workout events (what you did)
   - A structured plan (what you should do)
   
-  Into a single nested map showing both planned and performed data."
-  (:require [rp.util :as util]))
+  Into a single nested map showing both planned and performed data.")
+
+;; -----------------------------------------------------------------------------
+;; Deep merge utilities
+;; -----------------------------------------------------------------------------
+
+(defn- ordered-merge-with [f a b]
+  (reduce-kv
+   (fn [acc k v]
+     (if (contains? acc k)
+       (assoc acc k (f (get acc k) v))
+       (assoc acc k v)))
+   a b))
+
+(defn deep-merge-with
+  "Recursively merge maps, applying f to leaf values."
+  [f a b]
+  (cond
+    (and (map? a) (map? b)) (ordered-merge-with #(deep-merge-with f %1 %2) a b)
+    (and (nil? a) (map? b)) b
+    (and (map? a) (nil? b)) a
+    :else (f a b)))
 
 ;; -----------------------------------------------------------------------------
 ;; State reconstruction
@@ -48,7 +68,7 @@
         event-map (-> set-events
                       dedupe-by-latest
                       events->plan-map)]
-    (util/deep-merge-with merge-sets event-map plan)))
+    (deep-merge-with merge-sets event-map plan)))
 
 ;; -----------------------------------------------------------------------------
 ;; Feedback detection
