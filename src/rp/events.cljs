@@ -128,21 +128,21 @@
       (let [attrs (js-array->vec attrs-arr)
             keywords (js-array->vec keywords-arr)
             eavt (js-array->vec eavt-arr)
-            
+
             decode-attr (fn [idx]
                           (when-let [s (get attrs idx)]
                             (keyword (subs s 7)))) ; Strip ":event/" prefix (7 chars)
-            
+
             decode-val (fn [v]
                          (cond
                            ;; Keyword reference: [0 idx] 
                            (and (vector? v) (= 2 (count v)) (= 0 (first v)))
                            (when-let [s (get keywords (second v))]
                              (keyword (subs s 1))) ; Strip leading ":"
-                           
+
                            ;; Plain value
                            :else v))]
-        
+
         (->> eavt
              ;; Group by entity id
              (group-by first)
@@ -181,19 +181,19 @@
         ;; New format: vector of events
         (vector? data)
         (reset! events data)
-        
+
         ;; DataScript JS format: object with .-eavt (from #js reader)
         (and (object? data) (.-eavt ^js data))
         (when-let [migrated (migrate-datascript-js data)]
           (js/console.log "Migrated" (count migrated) "events from DataScript JS format")
           (reset! events migrated))
-        
+
         ;; DataScript EDN format: map with :datoms key
         (and (map? data) (:datoms data))
         (when-let [migrated (migrate-datascript-edn data)]
           (js/console.log "Migrated" (count migrated) "events from DataScript EDN format")
           (reset! events migrated))
-        
+
         ;; Unknown format
         :else
         (js/console.warn "Unknown data format, starting fresh")))))

@@ -365,7 +365,7 @@
   (el :div {}
       (el :section {}
           (el :h2 {} "Data")
-          (el :div {:style {:display "flex" :gap "0.5rem"}}
+          (el :div {:style {:display "flex" :gap "0.5rem" :flexWrap "wrap"}}
               (el :button.secondary
                   {:onclick (fn [_]
                               (let [data (events/db->edn)
@@ -376,7 +376,22 @@
                                 (set! (.-download link) (str "rp-workout-" (.toISOString (js/Date.)) ".edn"))
                                 (.click link)
                                 (.revokeObjectURL js/URL url)))}
-                  "Export All Data")
+                  "Export Data")
+              (el :button.secondary
+                  {:onclick (fn [_]
+                              (let [input (.createElement js/document "input")]
+                                (set! (.-type input) "file")
+                                (set! (.-accept input) ".edn")
+                                (set! (.-onchange input)
+                                      (fn [e]
+                                        (when-let [file (aget (.-files (.-target e)) 0)]
+                                          (-> (.text file)
+                                              (.then (fn [text]
+                                                       (events/load-from-edn! text)
+                                                       (js/alert (str "Imported " (count (events/get-all-events)) " events"))
+                                                       (render!)))))))
+                                (.click input)))}
+                  "Import Data")
               (el :button.secondary.outline
                   {:onclick (fn [_]
                               (when (js/confirm "Clear all workout logs?")

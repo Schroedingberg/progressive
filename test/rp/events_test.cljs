@@ -52,14 +52,14 @@
   (testing "migrates DataScript JS serialization format"
     ;; Clear events first
     (events/clear-all!)
-    
+
     ;; Load the sample data
     (events/load-from-edn! sample-datascript-js-str)
-    
+
     ;; Check we got events
     (let [all-events (events/get-all-events)]
       (is (= 3 (count all-events)) "Should have 3 events")
-      
+
       ;; Check first set-completed event
       (let [first-event (first all-events)]
         (is (= :set-completed (:type first-event)))
@@ -82,7 +82,7 @@
   (testing "migrates various event types correctly"
     (events/clear-all!)
     (events/load-from-edn! sample-datascript-js-str)
-    
+
     (let [all-events (events/get-all-events)
           by-type (group-by :type all-events)]
       (is (= 2 (count (:set-completed by-type))) "Should have 2 set-completed")
@@ -91,10 +91,10 @@
 (deftest new-format-loads-directly
   (testing "new vector format loads without migration"
     (events/clear-all!)
-    
+
     (let [new-format-str "[{:type :set-completed :mesocycle \"Test\" :timestamp 123}]"]
       (events/load-from-edn! new-format-str)
-      
+
       (is (= 1 (count (events/get-all-events))))
       (is (= :set-completed (:type (first (events/get-all-events))))))))
 
@@ -103,7 +103,7 @@
     (events/clear-all!)
     (events/load-from-edn! nil)
     (is (= 0 (count (events/get-all-events)))))
-  
+
   (testing "empty string doesn't crash"
     (events/clear-all!)
     ;; This will throw on read-string, but that's expected
