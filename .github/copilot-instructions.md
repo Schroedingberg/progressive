@@ -31,13 +31,13 @@ Plan template + Events → state/view-progress-in-plan → UI render
 
 | Namespace | Purpose |
 |-----------|---------|
-| `rp.core` | App entry point, service worker registration |
-| `rp.db` | DataScript schema, transactions, queries |
+| `rp.app` | Entry point, vanilla DOM UI, storage |
+| `rp.events` | Event store (atom-based, replaces DataScript) |
 | `rp.state` | Event log → plan structure transformation |
 | `rp.plan` | Plan templates and expansion |
-| `rp.storage` | localStorage persistence with auto-save |
-| `rp.ui` | Reagent components |
+| `rp.progression` | Prescription algorithms |
 | `rp.util` | Deep merge utilities |
+| `rp.config` | Version info |
 
 ## Code Style
 
@@ -49,16 +49,16 @@ Plan template + Events → state/view-progress-in-plan → UI render
 - Keep namespaces small and focused (~50-100 lines ideal)
 - Add docstrings to namespaces and public functions
 
-### Reagent Patterns
+### UI Patterns (Vanilla DOM)
 
-- Form-1 components for pure rendering
-- Form-2 components when local state is needed (atoms in outer fn)
-- Use `r/atom` for component-local state
-- Use DataScript + `db-version` atom for global reactive state
+- Use `el` helper function for DOM element creation
+- State changes trigger full `render!` call (simple, fast enough)
+- Store UI state in `app-state` atom
+- Keep event handlers inline with `onclick`, `oninput`, etc.
 
 ### Data Representation
 
-- Events use flat maps with namespaced-style keys (`:event/type`, `:event/weight`)
+- Events use flat maps with simple keys (`:type`, `:weight`, `:reps`, etc.)
 - Plans use nested maps: `{plan-name {microcycle {workout {exercise [sets]}}}}`
 - Preserve key ordering with `array-map` or `sorted-map` where display order matters
 
@@ -79,10 +79,9 @@ Tests use `cljs.test`. Focus on:
 
 ### Adding a new event type
 
-1. Add schema in `rp.db`
-2. Create transaction function in `rp.db`
-3. Handle in `rp.state/events->plan-map` if needed
-4. Update UI to trigger the event
+1. Add transaction function in `rp.events`
+2. Handle in `rp.state/events->plan-map` if needed
+3. Update UI in `rp.app` to trigger the event
 
 ### Adding a new plan template
 
