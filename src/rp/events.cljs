@@ -104,7 +104,10 @@
 
 (defn load-from-edn! [edn-str]
   (when edn-str
-    (reset! events (reader/read-string edn-str))))
+    (let [data (reader/read-string edn-str)]
+      ;; Only load if it's a vector (new format), ignore old DataScript format
+      (when (vector? data)
+        (reset! events data)))))
 
 (defn clear-all! []
   (reset! events [])

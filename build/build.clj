@@ -18,6 +18,6 @@
   [build-state]
   (let [version (get-version)]
     (println (str "[build] Injecting version: " version))
-    (update-in build-state 
-               [:compiler-options :closure-defines] 
+    (update-in build-state
+               [:compiler-options :closure-defines]
                assoc 'rp.app/VERSION version)))
