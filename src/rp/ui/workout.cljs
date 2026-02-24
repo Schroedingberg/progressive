@@ -216,18 +216,27 @@
 ;; Exercise card
 ;; -----------------------------------------------------------------------------
 
-(defn exercise-card [mesocycle microcycle workout-key exercise-name sets]
-  (let [muscle-groups (some :muscle-groups sets)
-        original-exercise (some :original-exercise sets)]
-    [:article
-     [:h4 {:style {:display "flex" :align-items "center" :gap "0.5rem"}}
-      exercise-name
-      (when original-exercise
-        [:small {:style {:opacity 0.5}} (str "(was: " original-exercise ")")])
-      (when muscle-groups
-        [:small {:style {:font-weight "normal" :margin-left "0.5rem" :color "var(--pico-muted-color)"}}
-         (str/join ", " (map name muscle-groups))])]
-     (doall
-      (for [[idx set-data] (map-indexed vector sets)]
-        ^{:key idx}
-        [set-row mesocycle microcycle workout-key exercise-name idx set-data original-exercise muscle-groups]))]))
+(defn exercise-card [_mesocycle _microcycle _workout-key _exercise-name _sets]
+  (let [extra-sets (r/atom 0)]
+    (fn [mesocycle microcycle workout-key exercise-name sets]
+      (let [muscle-groups (some :muscle-groups sets)
+            original-exercise (some :original-exercise sets)
+            total-sets (+ (count sets) @extra-sets)]
+        [:article
+         [:h4 {:style {:display "flex" :align-items "center" :gap "0.5rem"}}
+          exercise-name
+          (when original-exercise
+            [:small {:style {:opacity 0.5}} (str "(was: " original-exercise ")")])
+          (when muscle-groups
+            [:small {:style {:font-weight "normal" :margin-left "0.5rem" :color "var(--pico-muted-color)"}}
+             (str/join ", " (map name muscle-groups))])]
+         (doall
+          (for [idx (range total-sets)
+                :let [set-data (get sets idx {})]]
+            ^{:key idx}
+            [set-row mesocycle microcycle workout-key exercise-name idx set-data original-exercise muscle-groups]))
+         [:button.secondary.outline
+          {:type "button"
+           :style {:margin-top "0.5rem" :padding "0.25rem 0.75rem"}
+           :on-click #(swap! extra-sets inc)}
+          "+ Add set"]]))))
