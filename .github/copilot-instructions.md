@@ -68,7 +68,7 @@ npm run test:watch  # Watch mode
 ```
 
 Tests use `cljs.test`. Focus on:
-- State reconstruction logic (`state_test.cljs`)
+- State reconstruction logic (`events_test.cljs`, `state_test.cljs`)
 - Plan expansion
 - Pure functions over side-effects
 
@@ -77,7 +77,7 @@ Tests use `cljs.test`. Focus on:
 ### Adding a new event type
 
 1. Add transaction function in `rp.events`
-2. Handle in `rp.state/events->plan-map` if needed
+2. Handle in `events->plan-map` if needed
 3. Update UI in `rp.app` to trigger the event
 
 ### Adding a new plan template
@@ -87,12 +87,17 @@ Tests use `cljs.test`. Focus on:
 
 ### Modifying progression logic
 
-Progression belongs in a new `rp.progression` namespace (not yet implemented).
+Progression is in `rp.progression` namespace.
 Keep it as pure functions: `(next-workout events) → prescribed-values`
+
+## Roadmap
+
+- [ ] Weight input feels sluggish - investigate render performance or input handling
+- [ ] Address remaining GitHub issues
 
 ## Don't
 
 - Don't add server-side code - this is browser-only
-- Don't use external state management (re-frame, etc.) - DataScript is sufficient
+- Don't use external state management (re-frame, etc.) - atom-based events is sufficient
 - Don't over-engineer - the goal is ~200 lines of core logic
 - Don't break offline functionality - test with network disabled
