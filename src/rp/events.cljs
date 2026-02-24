@@ -102,25 +102,75 @@
 (defn db->edn []
   (pr-str @events))
 
-(defn- migrate-datascript
-  "Convert old DataScript serialized format to event vector.
-  Old format: {:schema {...} :datoms [[eid attr val tx] ...]}
-  New format: [{:type :set-completed :mesocycle ... :timestamp ...} ...]"
+(defn- js-array->vec
+  "Convert JS array to Clojure vector recursively."
+  [arr]
+  (when arr
+    (mapv (fn [x]
+            (if (array? x)
+              (js-array->vec x)
+              x))
+          arr)))
+
+(defn- migrate-datascript-js
+  "Convert DataScript's JS serialization format to event vector.
+  
+  Format: JS object with:
+    attrs: array of attribute name strings e.g. [\":event/exercise\" \":event/id\" ...]
+    keywords: array of keyword value strings e.g. [\":set-completed\" \":monday\" ...]  
+    eavt: array of datoms [eid attr-idx value tx]
+          where value can be a keyword reference as [0 idx]"
+  [^js js-obj]
+  (let [attrs-arr (.-attrs js-obj)
+        keywords-arr (.-keywords js-obj)
+        eavt-arr (.-eavt js-obj)]
+    (when (and attrs-arr eavt-arr)
+      (let [attrs (js-array->vec attrs-arr)
+            keywords (js-array->vec keywords-arr)
+            eavt (js-array->vec eavt-arr)
+            
+            decode-attr (fn [idx]
+                          (when-let [s (get attrs idx)]
+                            (keyword (subs s 7)))) ; Strip ":event/" prefix (7 chars)
+            
+            decode-val (fn [v]
+                         (cond
+                           ;; Keyword reference: [0 idx] 
+                           (and (vector? v) (= 2 (count v)) (= 0 (first v)))
+                           (when-let [s (get keywords (second v))]
+                             (keyword (subs s 1))) ; Strip leading ":"
+                           
+                           ;; Plain value
+                           :else v))]
+        
+        (->> eavt
+             ;; Group by entity id
+             (group-by first)
+             vals
+             ;; Convert each entity's datoms to event map
+             (map (fn [entity-datoms]
+                    (reduce (fn [acc [_eid attr-idx val _tx]]
+                              (when-let [attr (decode-attr attr-idx)]
+                                (assoc acc attr (decode-val val))))
+                            {}
+                            entity-datoms)))
+             ;; Filter to actual events
+             (filter :type)
+             vec)))))
+
+(defn- migrate-datascript-edn
+  "Convert old DataScript EDN format (with :datoms key) to event vector."
   [{:keys [datoms]}]
   (when (seq datoms)
     (->> datoms
-         ;; Group by entity id (first element of datom)
          (group-by first)
          vals
-         ;; Convert each entity's datoms to an event map
          (map (fn [entity-datoms]
                 (reduce (fn [acc [_eid attr val _tx]]
-                          ;; Strip :event/ namespace prefix
                           (let [k (keyword (name attr))]
                             (assoc acc k val)))
                         {}
                         entity-datoms)))
-         ;; Filter to only actual events (have :type)
          (filter :type)
          vec)))
 
@@ -132,13 +182,19 @@
         (vector? data)
         (reset! events data)
         
-        ;; Old DataScript format: map with :schema and :datoms
-        (and (map? data) (:datoms data))
-        (when-let [migrated (migrate-datascript data)]
-          (js/console.log "Migrated" (count migrated) "events from old format")
+        ;; DataScript JS format: object with .-eavt (from #js reader)
+        (and (object? data) (.-eavt ^js data))
+        (when-let [migrated (migrate-datascript-js data)]
+          (js/console.log "Migrated" (count migrated) "events from DataScript JS format")
           (reset! events migrated))
         
-        ;; Unknown format: ignore
+        ;; DataScript EDN format: map with :datoms key
+        (and (map? data) (:datoms data))
+        (when-let [migrated (migrate-datascript-edn data)]
+          (js/console.log "Migrated" (count migrated) "events from DataScript EDN format")
+          (reset! events migrated))
+        
+        ;; Unknown format
         :else
         (js/console.warn "Unknown data format, starting fresh")))))
 
