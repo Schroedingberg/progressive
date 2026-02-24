@@ -22,9 +22,9 @@ This means:
 ### Key Data Flow
 
 ```
-User action → Event created → DataScript transact → localStorage persist
+User action → Event created → atom transact → localStorage persist
                                       ↓
-Plan template + Events → state/view-progress-in-plan → UI render
+Plan template + Events → events/view-progress-in-plan → UI render
 ```
 
 ### Namespace Responsibilities
@@ -32,12 +32,9 @@ Plan template + Events → state/view-progress-in-plan → UI render
 | Namespace | Purpose |
 |-----------|---------|
 | `rp.app` | Entry point, vanilla DOM UI, storage |
-| `rp.events` | Event store (atom-based, replaces DataScript) |
-| `rp.state` | Event log → plan structure transformation |
+| `rp.events` | Event store, state reconstruction, deep merge, feedback detection |
 | `rp.plan` | Plan templates and expansion |
 | `rp.progression` | Prescription algorithms |
-| `rp.util` | Deep merge utilities |
-| `rp.config` | Version info |
 
 ## Code Style
 

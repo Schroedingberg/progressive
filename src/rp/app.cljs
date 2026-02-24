@@ -10,8 +10,7 @@
   (:require [clojure.string :as str]
             [rp.events :as events]
             [rp.plan :as plan]
-            [rp.progression :as prog]
-            [rp.state :as state]))
+            [rp.progression :as prog]))
 
 ;; Version injected at build time via :closure-defines
 (goog-define VERSION "dev")
@@ -26,7 +25,12 @@
          :inputs {}       ; {[exercise set-index] {:weight "" :reps ""}}
          :feedback nil    ; {:type :soreness/:session :muscle-group :quads :loc {...}}
          :swapping nil    ; exercise name being swapped
-         :swap-input ""}))
+         :swap-input ""
+         ;; Popup form state (no more hidden closure atoms)
+         :popup-form {:selected nil      ; soreness selection
+                      :pump 2            ; session pump rating 0-4
+                      :joint-pain :none  ; session joint pain
+                      :workload :just-right}}))
 
 ;; Feedback options
 (def ^:private soreness-options
@@ -98,70 +102,70 @@
                label))))
 
 (defn- render-soreness-popup [muscle-group loc]
-  (let [selected (atom nil)]
-    (fn []
-      (el :dialog {:open true :style {:maxWidth "400px"}}
-          (el :article {}
-              (el :header {}
-                  (el :h3 {} (str "How's your " (name muscle-group) "?"))
-                  (el :p {} "Since your last session..."))
-              (render-radio-group "soreness" soreness-options @selected
-                                  (fn [v] (reset! selected v) (render!)))
-              (el :footer {:style {:marginTop "1rem"}}
-                  (el :button {:disabled (nil? @selected)
-                               :onclick (fn [_]
-                                          (events/log-soreness-reported!
-                                           (assoc loc :muscle-group muscle-group :soreness @selected))
-                                          (swap! app-state assoc :feedback nil)
-                                          (render!))}
-                      "Submit")
-                  (el :button.secondary {:style {:marginLeft "0.5rem"}
-                                         :onclick (fn [_]
-                                                    (swap! app-state update :dismissed-feedback
-                                                           conj (dismiss-key loc :soreness muscle-group))
-                                                    (swap! app-state assoc :feedback nil)
-                                                    (render!))}
-                      "Skip")))))))
+  (let [selected (get-in @app-state [:popup-form :selected])]
+    (el :dialog {:open true :style {:maxWidth "400px"}}
+        (el :article {}
+            (el :header {}
+                (el :h3 {} (str "How's your " (name muscle-group) "?"))
+                (el :p {} "Since your last session..."))
+            (render-radio-group "soreness" soreness-options selected
+                                (fn [v] (swap! app-state assoc-in [:popup-form :selected] v) (render!)))
+            (el :footer {:style {:marginTop "1rem"}}
+                (el :button {:disabled (nil? selected)
+                             :onclick (fn [_]
+                                        (events/log-soreness-reported!
+                                         (assoc loc :muscle-group muscle-group :soreness selected))
+                                        (swap! app-state assoc :feedback nil)
+                                        (swap! app-state assoc-in [:popup-form :selected] nil)
+                                        (render!))}
+                    "Submit")
+                (el :button.secondary {:style {:marginLeft "0.5rem"}
+                                       :onclick (fn [_]
+                                                  (swap! app-state update :dismissed-feedback
+                                                         conj (dismiss-key loc :soreness muscle-group))
+                                                  (swap! app-state assoc :feedback nil)
+                                                  (render!))}
+                    "Skip"))))))
 
 (defn- render-session-popup [muscle-group loc]
-  (let [pump (atom 2)
-        joint-pain (atom :none)
-        workload (atom :just-right)]
-    (fn []
-      (el :dialog {:open true :style {:maxWidth "450px"}}
-          (el :article {}
-              (el :header {}
-                  (el :h3 {} (str "Rate your " (name muscle-group) " session")))
-              ;; Pump slider
-              (el :div {:style {:marginBottom "1rem"}}
-                  (el :label {} (str "Pump: " (get pump-labels @pump)))
-                  (el :input {:type "range" :min "0" :max "4" :value (str @pump)
-                              :oninput (fn [e] (reset! pump (js/parseInt (.-value (.-target e)))) (render!))}))
-              ;; Joint pain
-              (el :div {:style {:marginBottom "1rem"}}
-                  (el :label {} "Joint pain:")
-                  (render-radio-group "joint-pain" joint-pain-options @joint-pain
-                                      (fn [v] (reset! joint-pain v) (render!))))
-              ;; Workload
-              (el :div {:style {:marginBottom "1rem"}}
-                  (el :label {} "Number of sets felt:")
-                  (render-radio-group "workload" workload-options @workload
-                                      (fn [v] (reset! workload v) (render!))))
-              (el :footer {:style {:marginTop "1rem"}}
-                  (el :button {:onclick (fn [_]
-                                          (events/log-session-rated!
-                                           (assoc loc :muscle-group muscle-group
-                                                  :pump @pump :joint-pain @joint-pain :sets-workload @workload))
-                                          (swap! app-state assoc :feedback nil)
-                                          (render!))}
-                      "Submit")
-                  (el :button.secondary {:style {:marginLeft "0.5rem"}
-                                         :onclick (fn [_]
-                                                    (swap! app-state update :dismissed-feedback
-                                                           conj (dismiss-key loc :session muscle-group))
-                                                    (swap! app-state assoc :feedback nil)
-                                                    (render!))}
-                      "Skip")))))))
+  (let [{:keys [pump joint-pain workload]} (:popup-form @app-state)]
+    (el :dialog {:open true :style {:maxWidth "450px"}}
+        (el :article {}
+            (el :header {}
+                (el :h3 {} (str "Rate your " (name muscle-group) " session")))
+            ;; Pump slider
+            (el :div {:style {:marginBottom "1rem"}}
+                (el :label {} (str "Pump: " (get pump-labels pump)))
+                (el :input {:type "range" :min "0" :max "4" :value (str pump)
+                            :oninput (fn [e]
+                                       (swap! app-state assoc-in [:popup-form :pump]
+                                              (js/parseInt (.-value (.-target e))))
+                                       (render!))}))
+            ;; Joint pain
+            (el :div {:style {:marginBottom "1rem"}}
+                (el :label {} "Joint pain:")
+                (render-radio-group "joint-pain" joint-pain-options joint-pain
+                                    (fn [v] (swap! app-state assoc-in [:popup-form :joint-pain] v) (render!))))
+            ;; Workload
+            (el :div {:style {:marginBottom "1rem"}}
+                (el :label {} "Number of sets felt:")
+                (render-radio-group "workload" workload-options workload
+                                    (fn [v] (swap! app-state assoc-in [:popup-form :workload] v) (render!))))
+            (el :footer {:style {:marginTop "1rem"}}
+                (el :button {:onclick (fn [_]
+                                        (events/log-session-rated!
+                                         (assoc loc :muscle-group muscle-group
+                                                :pump pump :joint-pain joint-pain :sets-workload workload))
+                                        (swap! app-state assoc :feedback nil)
+                                        (render!))}
+                    "Submit")
+                (el :button.secondary {:style {:marginLeft "0.5rem"}
+                                       :onclick (fn [_]
+                                                  (swap! app-state update :dismissed-feedback
+                                                         conj (dismiss-key loc :session muscle-group))
+                                                  (swap! app-state assoc :feedback nil)
+                                                  (render!))}
+                    "Skip"))))))
 
 (defn- get-workout-muscle-groups [exercises-map]
   (->> exercises-map vals (mapcat identity) (mapcat :muscle-groups) (remove nil?) distinct))
@@ -171,12 +175,12 @@
     (let [workout-ex (get-in progress [(:mesocycle loc) (:microcycle loc) (:workout loc)])
           muscle-groups (get-workout-muscle-groups workout-ex)]
       ;; Check soreness first
-      (if-let [mg (->> (state/pending-soreness-feedback events progress loc muscle-groups)
+      (if-let [mg (->> (events/pending-soreness-feedback events progress loc muscle-groups)
                        (remove #(contains? dismissed (dismiss-key loc :soreness %)))
                        first)]
         {:type :soreness :muscle-group mg :loc loc}
         ;; Then session rating
-        (when-let [mg (->> (state/pending-session-rating events progress loc muscle-groups)
+        (when-let [mg (->> (events/pending-session-rating events progress loc muscle-groups)
                            (remove #(contains? dismissed (dismiss-key loc :session %)))
                            first)]
           {:type :session :muscle-group mg :loc loc})))))
@@ -311,16 +315,16 @@
 (defn- render-workouts []
   (let [all-events (events/get-all-events)
         plan-name (plan/get-plan-name)
-        progress (state/view-progress-in-plan all-events (plan/get-plan))
+        progress (events/view-progress-in-plan all-events (plan/get-plan))
         mesocycle-data (get progress plan-name)
-        active (state/last-active-workout all-events)
+        active (events/last-active-workout all-events)
         pending (find-pending-feedback all-events progress active (:dismissed-feedback @app-state))]
     (el :div {}
         ;; Feedback popup
         (when pending
           (case (:type pending)
-            :soreness ((render-soreness-popup (:muscle-group pending) (:loc pending)))
-            :session ((render-session-popup (:muscle-group pending) (:loc pending)))
+            :soreness (render-soreness-popup (:muscle-group pending) (:loc pending))
+            :session (render-session-popup (:muscle-group pending) (:loc pending))
             nil))
         ;; Workouts
         (apply el :div {}
@@ -330,8 +334,8 @@
                      (apply el :div {}
                             (for [[day exercises] workouts]
                               (let [loc {:mesocycle plan-name :microcycle week :workout day}
-                                    swaps (state/get-swaps all-events loc)
-                                    swapped (state/apply-swaps exercises swaps)]
+                                    swaps (events/get-swaps all-events loc)
+                                    swapped (events/apply-swaps exercises swaps)]
                                 (el :section {}
                                     (el :h3 {} (str/capitalize (name day)))
                                     (apply el :div {}
