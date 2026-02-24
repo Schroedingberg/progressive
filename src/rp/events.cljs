@@ -102,12 +102,45 @@
 (defn db->edn []
   (pr-str @events))
 
+(defn- migrate-datascript
+  "Convert old DataScript serialized format to event vector.
+  Old format: {:schema {...} :datoms [[eid attr val tx] ...]}
+  New format: [{:type :set-completed :mesocycle ... :timestamp ...} ...]"
+  [{:keys [datoms]}]
+  (when (seq datoms)
+    (->> datoms
+         ;; Group by entity id (first element of datom)
+         (group-by first)
+         vals
+         ;; Convert each entity's datoms to an event map
+         (map (fn [entity-datoms]
+                (reduce (fn [acc [_eid attr val _tx]]
+                          ;; Strip :event/ namespace prefix
+                          (let [k (keyword (name attr))]
+                            (assoc acc k val)))
+                        {}
+                        entity-datoms)))
+         ;; Filter to only actual events (have :type)
+         (filter :type)
+         vec)))
+
 (defn load-from-edn! [edn-str]
   (when edn-str
     (let [data (reader/read-string edn-str)]
-      ;; Only load if it's a vector (new format), ignore old DataScript format
-      (when (vector? data)
-        (reset! events data)))))
+      (cond
+        ;; New format: vector of events
+        (vector? data)
+        (reset! events data)
+        
+        ;; Old DataScript format: map with :schema and :datoms
+        (and (map? data) (:datoms data))
+        (when-let [migrated (migrate-datascript data)]
+          (js/console.log "Migrated" (count migrated) "events from old format")
+          (reset! events migrated))
+        
+        ;; Unknown format: ignore
+        :else
+        (js/console.warn "Unknown data format, starting fresh")))))
 
 (defn clear-all! []
   (reset! events [])
