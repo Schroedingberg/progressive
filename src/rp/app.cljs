@@ -61,18 +61,21 @@
         elem (.createElement js/document tag-name)]
     (doseq [c classes] (.add (.-classList elem) c))
     (doseq [[k v] attrs]
-      (case k
-        :style (doseq [[sk sv] v] (aset (.-style elem) (name sk) sv))
-        :class (.add (.-classList elem) v)
-        :disabled (when v (set! (.-disabled elem) true))
-        :checked (set! (.-checked elem) v)
-        :value (set! (.-value elem) (str v))
-        :placeholder (set! (.-placeholder elem) (str v))
-        :type (set! (.-type elem) (str v))
-        :min (set! (.-min elem) (str v))
-        :max (set! (.-max elem) (str v))
-        :open (when v (.setAttribute elem "open" ""))
-        (aset elem (name k) v)))
+      (let [attr-name (name k)]
+        (case k
+          :style (doseq [[sk sv] v] (aset (.-style elem) (name sk) sv))
+          :class (.add (.-classList elem) v)
+          :disabled (when v (set! (.-disabled elem) true))
+          :checked (set! (.-checked elem) v)
+          :value (set! (.-value elem) (str v))
+          :placeholder (set! (.-placeholder elem) (str v))
+          :type (set! (.-type elem) (str v))
+          :min (set! (.-min elem) (str v))
+          :max (set! (.-max elem) (str v))
+          :open (when v (.setAttribute elem "open" ""))
+          (if (str/starts-with? attr-name "data-")
+            (.setAttribute elem attr-name v)
+            (aset elem attr-name v)))))
     (doseq [child children]
       (when child
         (if (string? child)
@@ -196,6 +199,20 @@
   (swap! app-state assoc-in [:inputs (input-key exercise idx) field] value)
   nil)
 
+(defn- update-reps-placeholder!
+  "Update the reps placeholder based on entered weight (targeted DOM update)."
+  [meso micro workout exercise idx muscle-groups]
+  (let [weight-val (get-input exercise idx :weight)
+        user-wt (when (seq weight-val) (js/parseFloat weight-val))
+        loc {:mesocycle meso :microcycle micro :workout workout
+             :exercise exercise :set-index idx}
+        prescription (prog/prescribe (events/get-all-events) loc user-wt muscle-groups)
+        reps-input-id (str meso "-" micro "-" (name workout) "-" exercise "-" idx "-reps")
+        escaped-id (js/CSS.escape reps-input-id)
+        selector (str "[data-input='" escaped-id "']")]
+    (when-let [reps-el (.querySelector js/document selector)]
+      (.setAttribute reps-el "placeholder" (str (:reps prescription))))))
+
 (defn- render-set-row [meso micro workout exercise idx set-data muscle-groups]
   (let [{:keys [performed-weight performed-reps type]} set-data
         done? (or performed-weight (#{:set-skipped :set-rejected} type))
@@ -204,21 +221,29 @@
         weight-val (get-input exercise idx :weight)
         reps-val (get-input exercise idx :reps)
         user-wt (when (seq weight-val) (js/parseFloat weight-val))
-        prescription (prog/prescribe (events/get-all-events) loc user-wt muscle-groups)]
+        prescription (prog/prescribe (events/get-all-events) loc user-wt muscle-groups)
+        input-prefix (str meso "-" micro "-" (name workout) "-" exercise "-" idx)]
     (el :div {:style {:display "flex" :gap "0.5rem" :alignItems "center" :marginBottom "0.5rem"}}
         (el :input {:type "number"
                     :style {:width "5rem"}
                     :value (if done? (str performed-weight) weight-val)
                     :placeholder (str (:weight prescription) " kg")
                     :disabled done?
-                    :oninput (fn [e] (set-input! exercise idx :weight (.-value (.-target e))) (render!))})
+                    :data-input (str input-prefix "-weight")
+                    :oninput (fn [e]
+                               (set-input! exercise idx :weight (.-value (.-target e)))
+                               ;; Only update reps placeholder, don't re-render
+                               (update-reps-placeholder! meso micro workout exercise idx muscle-groups))})
         (el :span {} "×")
         (el :input {:type "number"
                     :style {:width "4rem"}
                     :value (if done? (str performed-reps) reps-val)
                     :placeholder (str (:reps prescription))
                     :disabled done?
-                    :oninput (fn [e] (set-input! exercise idx :reps (.-value (.-target e))) (render!))})
+                    :data-input (str input-prefix "-reps")
+                    :oninput (fn [e]
+                               ;; Just store value, no need to update anything
+                               (set-input! exercise idx :reps (.-value (.-target e))))})
         (cond
           (= type :set-skipped)
           (el :span {:style {:opacity "0.5"}} "skipped")
@@ -272,7 +297,7 @@
                           :placeholder "Replacement exercise name"
                           :value swap-input
                           :style {:flex "1"}
-                          :oninput (fn [e] (swap! app-state assoc :swap-input (.-value (.-target e))) (render!))})
+                          :oninput (fn [e] (swap! app-state assoc :swap-input (.-value (.-target e))))})
               (el :button.secondary {:type "button"
                                      :disabled (empty? swap-input)
                                      :onclick (fn [_]
@@ -450,11 +475,33 @@
         (el :footer {:style {:marginTop "2rem" :textAlign "center"}}
             (el :small {} "Romance Progression • Local-first PWA")))))
 
+(defn- save-focus []
+  (when-let [el (.-activeElement js/document)]
+    (when (= "INPUT" (.-tagName el))
+      {:data-input (.. el -dataset -input)
+       :selection-start (.-selectionStart el)
+       :selection-end (.-selectionEnd el)})))
+
+(defn- restore-focus [{:keys [data-input selection-start selection-end]}]
+  (when data-input
+    (js/requestAnimationFrame
+     (fn []
+       (let [el (.querySelector js/document (str "[data-input='" (js/CSS.escape data-input) "']"))]
+         (when (and el (not (.-disabled el)))
+           (.focus el)
+           (when (and selection-start selection-end (not= "number" (.-type el)))
+             (try
+               (set! (.-selectionStart el) selection-start)
+               (set! (.-selectionEnd el) selection-end)
+               (catch :default _)))))))))
+
 (defn render! []
-  (let [app-el ($ "#app")]
+  (let [focus-info (save-focus)
+        app-el ($ "#app")]
     (set! (.-innerHTML app-el) "")
     (.appendChild app-el (render-nav))
-    (.appendChild app-el (render-page))))
+    (.appendChild app-el (render-page))
+    (restore-focus focus-info)))
 
 ;; -----------------------------------------------------------------------------
 ;; Storage
