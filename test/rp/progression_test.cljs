@@ -90,6 +90,31 @@
                     :exercise "Squat" :set-index 0}]
       (is (= 11 (prog/prescribe-reps sample-events location 95)))))
 
+  (testing "lower weight never gives fewer reps than prescribed - slight decrease"
+    ;; Key invariant: if weight goes DOWN, reps should NOT go down
+    ;; Edge case: weight just below prescribed can give fewer reps due to 1RM math
+    ;; 
+    ;; Last: 105kg × 8 reps
+    ;; Prescribed: 107.5kg
+    ;; At 107kg the 1RM-based math might give 7 reps, but since weight < prescribed,
+    ;; we should get at least 8 reps
+    (let [events [{:type :set-completed
+                   :mesocycle "Plan" :microcycle 0 :workout :monday
+                   :exercise "Squat" :set-index 0
+                   :performed-weight 105 :performed-reps 8 :timestamp 1000}]
+          location {:mesocycle "Plan" :microcycle 1 :workout :monday
+                    :exercise "Squat" :set-index 0}]
+      ;; Prescribed weight: 105 + 2.5 = 107.5
+      (is (= 107.5 (prog/prescribe-weight events location)))
+      ;; At exactly prescribed weight: 8 reps
+      (is (= 8 (prog/prescribe-reps events location 107.5)))
+      ;; At 107kg (slightly less): should be >= 8, not 7
+      (is (>= (prog/prescribe-reps events location 107) 8))
+      ;; At 106kg: definitely >= 8
+      (is (>= (prog/prescribe-reps events location 106) 8))
+      ;; At 100kg: should be more than 8
+      (is (> (prog/prescribe-reps events location 100) 8))))
+
   (testing "adjusts reps using 1RM-based rep ranges - high rep scenario"
     ;; Issue: Prescribed 41.8kg × 15 reps, user picks 45kg
     ;; Current (work preservation): 627/45 ≈ 14 reps

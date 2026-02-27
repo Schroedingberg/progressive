@@ -1,263 +1,226 @@
 (ns rp.progression
   "Compute workout prescriptions from training history.
   
-  Core principles:
-  - No planning ahead — prescriptions computed on-the-fly from events
-  - Weight-first progression — add weight each session
-  - Work preservation — if user overrides weight, adjust reps to maintain
-    similar total work increase
-  - Feedback-driven — adjust weight increment based on recovery and session feedback
+  Design: Build a context map, then thread through pure transformations.
   
-  Work model: work ≈ weight × reps (simplified)
+  Context map contains:
+    :last-weight, :last-reps     - previous performance
+    :increment                   - feedback-adjusted weight step
+    :one-rep-max                 - estimated from last performance
+    :prescribed-weight           - last-weight + increment
+    :actual-weight               - user's chosen weight (optional)
   
-  Example:
-    Last session: 100kg × 10 = 1000 work
-    Prescribed:   102.5kg × 10 = 1025 work (+2.5%)
-    User picks 110kg → reps adjusted to 1025/110 ≈ 9 reps")
+  Invariant: lower weight → equal or more reps")
 
-;; -----------------------------------------------------------------------------
-;; Configuration
-;; -----------------------------------------------------------------------------
+;; =============================================================================
+;; 1RM Curve (pure math, no events)
+;; =============================================================================
 
-(def ^:private base-weight-increment 2.5)  ; kg to add each session
+(def ^:private reps-percentage-table
+  "Known reps↔%1RM anchor points."
+  [[1 1.00] [2 0.95] [3 0.93] [4 0.90] [5 0.87] [6 0.85] [7 0.83]
+   [8 0.80] [9 0.77] [10 0.75] [11 0.72] [12 0.70] [15 0.65]
+   [20 0.60] [25 0.55] [30 0.50]])
 
-;; Feedback-based increment modifiers
-(def ^:private soreness-modifiers
-  {:never-sore         1.5    ; Recovered fast, push harder
-   :healed-early       1.25   ; Recovered well, slight increase
-   :healed-just-in-time 1.0   ; Perfect recovery, maintain
-   :still-sore         0.5})  ; Still recovering, back off
+(defn- interpolate
+  "Linear interpolation: given sorted [x y] points, find y at x."
+  [points x]
+  (let [[lo hi] (reduce (fn [[lo hi] [px _ :as point]]
+                          (cond
+                            (<= px x) [point hi]
+                            (nil? hi) [lo point]
+                            :else [lo hi]))
+                        [nil nil]
+                        points)
+        [x1 y1] (or lo (first points))
+        [x2 y2] (or hi (last points))]
+    (if (= x1 x2)
+      y1
+      (let [t (/ (- x x1) (- x2 x1))]
+        (+ y1 (* t (- y2 y1)))))))
 
-(def ^:private workload-modifiers
-  {:easy          1.25   ; Session felt easy, push harder
-   :just-right    1.0    ; Perfect effort
-   :pushed-limits 1.0    ; Good challenge, maintain
-   :too-much      0.75}) ; Overreached, reduce
-
-(def ^:private joint-pain-override
-  {:none   nil      ; No override
-   :some   0.75     ; Reduce due to discomfort
-   :severe 0.0})    ; Zero increase with pain
-
-;; Rep ↔ %1RM lookup table
-;; Covers hypertrophy range (5-30 reps), with lower reps for 1RM estimation
-;; Values tuned to match expected rep adjustments from user feedback
-(def ^:private rep-percentage-table
-  {1  1.00
-   2  0.95
-   3  0.93
-   4  0.90
-   5  0.87
-   6  0.85
-   7  0.83
-   8  0.80
-   9  0.77
-   10 0.75
-   11 0.72
-   12 0.70
-   15 0.65
-   20 0.60
-   25 0.55
-   30 0.50})
-
-(defn- lerp
-  "Linear intERPolation: returns value between a and b based on t (0-1)."
-  [a b t]
-  (+ a (* t (- b a))))
-
-(defn- interpolate-in-table
-  "Look up value in table; interpolate linearly between neighbors if not found."
-  [table value]
-  (let [ks (keys table)
-        lower (apply max (filter #(< % value) ks))
-        upper (apply min (filter #(> % value) ks))
-        t (/ (- value lower) (- upper lower))]
-    (lerp (table lower) (table upper) t)))
+(def ^:private percentage-reps-table
+  "Inverted table: %1RM → reps (sorted ascending by %)."
+  (vec (sort-by first (map (fn [[r p]] [p r]) reps-percentage-table))))
 
 (defn- reps->percentage
-  "Convert reps to %1RM. Interpolates between known values."
+  "What %1RM corresponds to this rep count?"
   [reps]
-  (let [reps (max 1 (min 30 reps))]
-    (or (get rep-percentage-table reps)
-        (interpolate-in-table rep-percentage-table reps))))
-
-;; Inverted table: percentage -> reps (for reverse lookup)
-(def ^:private percentage-rep-table
-  (into {} (map (fn [[r p]] [p r]) rep-percentage-table)))
+  (interpolate reps-percentage-table (max 1 (min 30 reps))))
 
 (defn- percentage->reps
-  "Convert %1RM to reps. Interpolates between known values."
-  [pct]
-  (let [pct (max 0.50 (min 1.0 pct))]
-    (or (get percentage-rep-table pct)
-        (interpolate-in-table percentage-rep-table pct))))
+  "How many reps at this %1RM?"
+  [percentage]
+  (interpolate percentage-reps-table (max 0.5 (min 1.0 percentage))))
 
-(defn- estimate-1rm
-  "Estimate 1RM from weight and reps using percentage table."
+(defn- estimate-one-rep-max
+  "Estimate 1RM from a weight×reps performance."
   [weight reps]
   (/ weight (reps->percentage reps)))
 
-(defn- reps-for-weight
-  "Calculate reps for a given weight based on estimated 1RM."
-  [one-rm weight]
-  (let [pct (/ weight one-rm)]
-    (js/Math.round (percentage->reps pct))))
+(defn- reps-at-weight
+  "How many reps should be possible at this weight, given a 1RM?"
+  [one-rep-max weight]
+  (-> (/ weight one-rep-max)
+      percentage->reps
+      js/Math.round
+      (max 1)))
 
-;; -----------------------------------------------------------------------------
+;; =============================================================================
 ;; History queries
-;; -----------------------------------------------------------------------------
+;; =============================================================================
 
 (defn- same-slot?
-  "Check if event is for the same workout slot (exercise + set-index on same day)."
-  [event {:keys [mesocycle workout exercise set-index]}]
-  (and (= (:mesocycle event) mesocycle)
-       (= (keyword (:workout event)) (keyword workout))
-       (= (:exercise event) exercise)
-       (= (:set-index event) set-index)))
+  "Does event match this location (ignoring microcycle)?"
+  [{:keys [mesocycle workout exercise set-index]} event]
+  (and (= mesocycle (:mesocycle event))
+       (= (keyword workout) (keyword (:workout event)))
+       (= exercise (:exercise event))
+       (= set-index (:set-index event))))
 
 (defn last-performance
-  "Find the most recent completed set for the same slot in a PREVIOUS microcycle.
-  Returns nil if no history exists."
+  "Most recent completed set for this slot from a previous microcycle."
   [events {:keys [microcycle] :as location}]
   (->> events
-       (filter #(= (:type %) :set-completed))
-       (filter #(same-slot? % location))
-       (filter #(< (:microcycle %) microcycle))  ; only previous weeks
+       (filter #(and (= :set-completed (:type %))
+                     (same-slot? location %)
+                     (< (:microcycle %) microcycle)))
        (sort-by :timestamp)
        last))
 
 (defn all-performances
-  "Get all completed sets for this slot, across all microcycles."
+  "All completed sets for this slot, across all microcycles."
   [events location]
   (->> events
-       (filter #(= (:type %) :set-completed))
-       (filter #(same-slot? % location))
+       (filter #(and (= :set-completed (:type %)) (same-slot? location %)))
        (sort-by :timestamp)))
 
-;; -----------------------------------------------------------------------------
-;; Feedback queries
-;; -----------------------------------------------------------------------------
+;; =============================================================================
+;; Feedback → increment multiplier (pure data transform)
+;; =============================================================================
 
-(defn- get-feedback
-  "Get the latest feedback of given type for a muscle group from previous microcycle."
-  [events event-type {:keys [mesocycle microcycle]} muscle-group]
-  (->> events
-       (filter #(= (:type %) event-type))
-       (filter #(= (:mesocycle %) mesocycle))
-       (filter #(= (:microcycle %) (dec microcycle))) ; previous week's feedback
-       (filter #(some #{(:muscle-group %)} (if (keyword? muscle-group)
-                                             [muscle-group]
-                                             muscle-group)))
-       (sort-by :timestamp)
-       last))
+(def ^:private base-increment 2.5)
 
-(defn- compute-weight-increment
-  "Calculate weight increment based on feedback from previous microcycle.
-  Returns the adjusted increment (may be 0 if joint pain is severe)."
+(def ^:private soreness-multiplier
+  {:never-sore 1.5, :healed-early 1.25, :healed-just-in-time 1.0, :still-sore 0.5})
+
+(def ^:private workload-multiplier
+  {:easy 1.25, :just-right 1.0, :pushed-limits 1.0, :too-much 0.75})
+
+(def ^:private joint-pain-multiplier
+  {:none 1.0, :some 0.75, :severe 0.0})
+
+(defn- feedback-multiplier
+  "Compute increment multiplier from soreness and session feedback.
+   Joint pain overrides other factors when present."
+  [{:keys [soreness joint-pain workload]}]
+  (if (and joint-pain (not= joint-pain :none))
+    (joint-pain-multiplier joint-pain)
+    (* (get soreness-multiplier soreness 1.0)
+       (get workload-multiplier workload 1.0))))
+
+(defn- find-feedback
+  "Find relevant feedback events for a muscle group from previous microcycle."
+  [events {:keys [mesocycle microcycle]} muscle-group]
+  (let [prev-micro (dec microcycle)
+        matching (fn [event-type]
+                   (->> events
+                        (filter #(and (= event-type (:type %))
+                                      (= mesocycle (:mesocycle %))
+                                      (= prev-micro (:microcycle %))
+                                      (= muscle-group (:muscle-group %))))
+                        (sort-by :timestamp)
+                        last))]
+    {:soreness   (:soreness (matching :soreness-reported))
+     :joint-pain (:joint-pain (matching :session-rated))
+     :workload   (:sets-workload (matching :session-rated))}))
+
+(defn- compute-increment
+  "Compute feedback-adjusted increment for this context."
   [events location muscle-groups]
   (if (or (nil? muscle-groups) (<= (:microcycle location) 0))
-    ;; No muscle groups or first week: use base increment
-    base-weight-increment
-    ;; Check feedback for any of the exercise's muscle groups
-    (let [mg (first muscle-groups)  ; Use primary muscle group
-          soreness (get-feedback events :soreness-reported location mg)
-          session (get-feedback events :session-rated location mg)
+    base-increment
+    (let [feedback (find-feedback events location (first muscle-groups))]
+      (* base-increment (feedback-multiplier feedback)))))
 
-          ;; Calculate modifiers
-          soreness-mod (get soreness-modifiers (:soreness soreness) 1.0)
-          workload-mod (get workload-modifiers (:sets-workload session) 1.0)
-          pain-override (get joint-pain-override (:joint-pain session))]
+;; =============================================================================
+;; Context building & prescription (threaded design)
+;; =============================================================================
 
-      ;; Joint pain overrides everything
-      (if (some? pain-override)
-        (* base-weight-increment pain-override)
-        ;; Otherwise combine modifiers
-        (* base-weight-increment soreness-mod workload-mod)))))
+(defn- build-context
+  "Build prescription context from events and location.
+   Returns nil if no history exists."
+  [events location muscle-groups actual-weight]
+  (when-let [{:keys [performed-weight performed-reps]} (last-performance events location)]
+    (let [increment (compute-increment events location muscle-groups)
+          one-rep-max (estimate-one-rep-max performed-weight performed-reps)]
+      {:last-weight      performed-weight
+       :last-reps        performed-reps
+       :increment        increment
+       :one-rep-max      one-rep-max
+       :prescribed-weight (+ performed-weight increment)
+       :actual-weight    actual-weight})))
 
-;; -----------------------------------------------------------------------------
-;; Prescription
-;; -----------------------------------------------------------------------------
+(defn- compute-reps
+  "Compute prescribed reps from context.
+   Invariant: lower weight → at least as many reps as last time."
+  [{:keys [last-reps one-rep-max prescribed-weight actual-weight] :as context}]
+  (when context
+    (cond
+      (nil? actual-weight)
+      last-reps
+
+      (<= actual-weight prescribed-weight)
+      (max last-reps (reps-at-weight one-rep-max actual-weight))
+
+      :else
+      (reps-at-weight one-rep-max actual-weight))))
+
+(defn- compute-weight
+  "Extract prescribed weight from context."
+  [{:keys [prescribed-weight] :as context}]
+  (when context prescribed-weight))
+
+;; =============================================================================
+;; Public API
+;; =============================================================================
 
 (defn prescribe-weight
-  "Suggest weight for next set: last weight + feedback-adjusted increment.
-  Returns nil if no history (first workout of meso).
-  
-  muscle-groups is optional - if provided, feedback for those groups affects increment."
-  ([events location]
-   (prescribe-weight events location nil))
+  "Prescribed weight: last + feedback-adjusted increment. Nil if no history."
+  ([events location] (prescribe-weight events location nil))
   ([events location muscle-groups]
-   (when-let [last-perf (last-performance events location)]
-     (let [increment (compute-weight-increment events location muscle-groups)]
-       (+ (:performed-weight last-perf) increment)))))
+   (-> (build-context events location muscle-groups nil)
+       compute-weight)))
 
 (defn prescribe-reps
-  "Suggest reps for next set.
-  
-  If actual-weight is provided and differs from prescribed weight,
-  adjusts reps using 1RM-based calculation to maintain equivalent intensity.
-  
-  Returns nil if no history."
-  ([events location]
-   (prescribe-reps events location nil nil))
-  ([events location actual-weight]
-   (prescribe-reps events location actual-weight nil))
+  "Prescribed reps, adjusted for actual weight if provided.
+   Invariant: lower weight → at least as many reps."
+  ([events location] (prescribe-reps events location nil nil))
+  ([events location actual-weight] (prescribe-reps events location actual-weight nil))
   ([events location actual-weight muscle-groups]
-   (when-let [last-perf (last-performance events location)]
-     (let [last-weight (:performed-weight last-perf)
-           last-reps (:performed-reps last-perf)
-           increment (compute-weight-increment events location muscle-groups)
-           prescribed-weight (+ last-weight increment)
-           ;; Estimate 1RM from last performance
-           estimated-1rm (estimate-1rm last-weight last-reps)]
-       (if (and actual-weight (not= actual-weight prescribed-weight))
-         ;; User overrode weight → adjust reps using 1RM curve
-         (max 1 (reps-for-weight estimated-1rm actual-weight))
-         ;; Use last reps as target
-         last-reps)))))
+   (-> (build-context events location muscle-groups actual-weight)
+       compute-reps)))
 
 (defn prescribe
-  "Get full prescription for a set location.
-  Returns {:weight ... :reps ...} or nil for each if no history.
-  
-  muscle-groups is optional - if provided, feedback for those groups affects increment."
-  ([events location]
-   (prescribe events location nil nil))
-  ([events location actual-weight]
-   (prescribe events location actual-weight nil))
+  "Full prescription {:weight :reps}."
+  ([events location] (prescribe events location nil nil))
+  ([events location actual-weight] (prescribe events location actual-weight nil))
   ([events location actual-weight muscle-groups]
-   {:weight (prescribe-weight events location muscle-groups)
-    :reps (prescribe-reps events location actual-weight muscle-groups)}))
+   (let [context (build-context events location muscle-groups actual-weight)]
+     {:weight (compute-weight context)
+      :reps   (compute-reps context)})))
 
 ;; -----------------------------------------------------------------------------
-;; Analysis (for future feedback-based volume adjustment)
+;; Analysis
 ;; -----------------------------------------------------------------------------
 
 (defn exercise-volume
-  "Count completed sets for an exercise in a microcycle."
+  "Completed sets for an exercise in a microcycle."
   [events {:keys [mesocycle microcycle workout exercise]}]
   (->> events
-       (filter #(= (:type %) :set-completed))
-       (filter #(and (= (:mesocycle %) mesocycle)
-                     (= (:microcycle %) microcycle)
-                     (= (keyword (:workout %)) (keyword workout))
-                     (= (:exercise %) exercise)))
+       (filter #(and (= :set-completed (:type %))
+                     (= mesocycle (:mesocycle %))
+                     (= microcycle (:microcycle %))
+                     (= (keyword workout) (keyword (:workout %)))
+                     (= exercise (:exercise %))))
        count))
-
-
-(comment
-
-  (prescribe-reps [{:type :set-completed
-                    :mesocycle "plan1"
-                    :microcycle 0
-                    :workout "day1"
-                    :exercise "squat"
-                    :set-index 0
-                    :performed-weight 100
-                    :performed-reps 10
-                    :timestamp 123456789}]
-                  {:mesocycle "plan1" :microcycle 1 :workout "day1" :exercise "squat" :set-index 0}
-                  105)
-
-
-  ;; end of rich comment block
-  ())
